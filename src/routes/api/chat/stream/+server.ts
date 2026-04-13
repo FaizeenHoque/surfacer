@@ -814,6 +814,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
     let assistantResponse = '';
     let responseModel = model;
+    let streamCompleted = false;
 
     try {
       const encoder = new TextEncoder();
@@ -847,6 +848,9 @@ export const POST: RequestHandler = async ({ request }) => {
                 }
               }
 
+              // Mark stream as completed before finalizing credits
+              streamCompleted = true;
+
               if (assistantResponse.trim()) {
                 const responseCost = isFollowUp ? FOLLOW_UP_CREDIT_COST : calculateCreditCost(pageCount, responseModel);
                 await finalizeAssistantResponse({
@@ -875,6 +879,20 @@ export const POST: RequestHandler = async ({ request }) => {
               controller.close();
             } catch (streamErr: unknown) {
               const streamMessage = streamErr instanceof Error ? streamErr.message : 'Streaming failed';
+              
+              // Only save incomplete response without deducting credits
+              if (assistantResponse.trim() && !streamCompleted) {
+                debugLog(requestId, 'response_incomplete_not_charged', {
+                  assistantResponseLength: assistantResponse.length,
+                  wasInterrupted: true,
+                });
+                try {
+                  await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse);
+                } catch {
+                  // Ignore error when saving incomplete response
+                }
+              }
+              
               controller.error(new Error(streamMessage));
             } finally {
               rateLimitLease?.release();
@@ -935,6 +953,9 @@ export const POST: RequestHandler = async ({ request }) => {
                 }
               }
 
+              // Mark stream as completed before finalizing credits
+              streamCompleted = true;
+
               if (assistantResponse.trim()) {
                 const responseCost = isFollowUp ? FOLLOW_UP_CREDIT_COST : calculateCreditCost(pageCount, responseModel);
                 await finalizeAssistantResponse({
@@ -963,6 +984,21 @@ export const POST: RequestHandler = async ({ request }) => {
               controller.close();
             } catch (streamErr: unknown) {
               const streamMessage = streamErr instanceof Error ? streamErr.message : 'Streaming failed';
+              
+              // Only save incomplete response without deducting credits
+              if (assistantResponse.trim() && !streamCompleted) {
+                debugLog(requestId, 'response_incomplete_not_charged', {
+                  assistantResponseLength: assistantResponse.length,
+                  wasInterrupted: true,
+                  model: responseModel,
+                });
+                try {
+                  await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse);
+                } catch {
+                  // Ignore error when saving incomplete response
+                }
+              }
+              
               controller.error(new Error(streamMessage));
             } finally {
               rateLimitLease?.release();

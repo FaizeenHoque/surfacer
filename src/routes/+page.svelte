@@ -1294,14 +1294,28 @@
       if (!response.ok) {
         const raw = await response.text();
         let message = 'Chat request failed';
+        let isDuplicateFile = false;
+        let sessionId = null;
+        
         if (raw) {
           try {
-            const payload = JSON.parse(raw) as { error?: string; message?: string };
+            const payload = JSON.parse(raw) as { error?: string; message?: string; isDuplicateFile?: boolean; sessionId?: string };
             message = payload.error || payload.message || raw;
+            isDuplicateFile = payload.isDuplicateFile === true;
+            sessionId = payload.sessionId || null;
           } catch {
             message = raw;
           }
         }
+        
+        // Handle duplicate file as a non-intrusive notification
+        if (isDuplicateFile) {
+          // Remove the system error message that was added
+          messages = messages.slice(0, -1);
+          notifySystem(message);
+          return;
+        }
+        
         throw new Error(message);
       }
 

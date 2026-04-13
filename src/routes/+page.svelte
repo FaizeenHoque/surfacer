@@ -17,7 +17,6 @@
   let isLoadingChat = $state(false);
   let isUploading = $state(false);
   let selectedModel = $state('nvidia/nemotron-3-super-120b-a12b:free');
-  let reasoningVisibility = $state<'hide' | 'show'>('hide');
   let messages = $state<Message[]>([]);
   let currentUser = $state<{ id: string; email: string } | null>(null);
   let credits = $state(0);
@@ -34,7 +33,7 @@
 
   type Message =
     | { id: string; type: 'system'; text: string }
-    | { id: string; type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean }
+    | { id: string; type: 'ai'; content: string; timestamp: string; streaming?: boolean }
     | { id: string; type: 'user'; content: string; timestamp: string };
 
   type StoredFile = {
@@ -186,7 +185,7 @@
     `.trim();
   }
 
-  function renderMarkdown(text: string, streaming = false) {
+  function renderMarkdown(text: string) {
 
     const lines = text.replace(/\r/g, '').split('\n');
     const blocks: string[] = [];
@@ -402,7 +401,6 @@
               id: entry.id || makeMessageId('ai'),
               type: 'ai' as const,
               content: entry.content,
-              reasoning: '',
               timestamp: formatTimestamp(entry.created_at),
               streaming: false,
             };
@@ -566,7 +564,7 @@
     const now = formatTimestamp(new Date().toISOString());
     messages = [...messages, { id: makeMessageId('user'), type: 'user', content: text, timestamp: now }];
     const aiIndex = messages.length;
-    messages = [...messages, { id: makeMessageId('ai'), type: 'ai', content: '', reasoning: '', timestamp: now, streaming: true }];
+    messages = [...messages, { id: makeMessageId('ai'), type: 'ai', content: '', timestamp: now, streaming: true }];
     isThinking = true;
     scrollToBottom();
 
@@ -602,121 +600,16 @@
         throw new Error(message);
       }
 
-      if (!response.body) {
-        throw new Error('No stream received from server');
+      const payload = (await response.json()) as { message?: string; error?: string };
+      const content = (payload.message || '').trim();
+      if (!content) {
+        throw new Error(payload.error || 'Model returned an empty response. Please try again.');
       }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let content = '';
-      let reasoning = '';
-      let streamBuffer = '';
-      let eventDataLines: string[] = [];
-      let pendingRender = false;
-
-      const applyAiUpdate = (force = false) => {
-        if (!force && pendingRender) return;
-        pendingRender = true;
-
-        const render = () => {
-          pendingRender = false;
-          const wasNearBottom = isNearBottom();
-          const next = [...messages];
-          const target = next[aiIndex];
-          if (target && target.type === 'ai') {
-            next[aiIndex] = { ...target, content, reasoning, streaming: true };
-            messages = next;
-          }
-          if (wasNearBottom) {
-            scrollToBottom();
-          }
-        };
-
-        if (force) {
-          render();
-          return;
-        }
-
-        requestAnimationFrame(render);
-      };
-
-      const handlePayload = (payloadLine: string) => {
-        if (!payloadLine || payloadLine === '[DONE]') return;
-
-        try {
-          const payload = JSON.parse(payloadLine) as { type?: string; delta?: string };
-          if (payload.type === 'reasoning' && payload.delta) {
-            reasoning += payload.delta;
-            applyAiUpdate();
-            return;
-          }
-
-          if (payload.type === 'content' && payload.delta) {
-            content += payload.delta;
-            applyAiUpdate();
-            return;
-          }
-        } catch {
-          content += payloadLine;
-          applyAiUpdate();
-        }
-      };
-
-      const flushSseEvent = () => {
-        if (!eventDataLines.length) return;
-        const payloadLine = eventDataLines.join('\n').trim();
-        eventDataLines = [];
-        handlePayload(payloadLine);
-      };
-
-      const processSseChunk = (chunk: string) => {
-        streamBuffer += chunk;
-
-        while (true) {
-          const match = streamBuffer.match(/\r\n|\n|\r/);
-          if (!match || match.index === undefined) break;
-
-          const lineEnd = match.index;
-          const line = streamBuffer.slice(0, lineEnd);
-          streamBuffer = streamBuffer.slice(lineEnd + match[0].length);
-
-          if (!line) {
-            flushSseEvent();
-            continue;
-          }
-
-          if (line.startsWith(':') || line.startsWith('event:')) {
-            continue;
-          }
-
-          if (line.startsWith('data:')) {
-            eventDataLines.push(line.slice(5).trimStart());
-          } else {
-            eventDataLines.push(line);
-          }
-        }
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        processSseChunk(decoder.decode(value, { stream: true }));
-      }
-
-      processSseChunk(decoder.decode());
-      if (streamBuffer.trim()) {
-        eventDataLines.push(streamBuffer.trim());
-        streamBuffer = '';
-      }
-      flushSseEvent();
-
-      applyAiUpdate(true);
 
       const next = [...messages];
       const target = next[aiIndex];
       if (target && target.type === 'ai') {
-        next[aiIndex] = { ...target, content, reasoning, streaming: false };
+        next[aiIndex] = { ...target, content, streaming: false };
         messages = next;
       }
     } catch (err: unknown) {
@@ -724,7 +617,7 @@
       const next = [...messages];
       const target = next[aiIndex];
       if (target && target.type === 'ai') {
-        next[aiIndex] = { ...target, content: errorText, reasoning: '', streaming: false };
+        next[aiIndex] = { ...target, content: errorText, streaming: false };
         messages = next;
       }
     } finally {
@@ -952,15 +845,6 @@
               <option value={model.value}>{model.label}</option>
             {/each}
           </select>
-
-          <select
-            bind:value={reasoningVisibility}
-            class="model-select desktop-only px-3 py-1.5 rounded-lg text-xs font-mono"
-            style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
-          >
-            <option value="hide">Reasoning: hidden</option>
-            <option value="show">Reasoning: shown</option>
-          </select>
         </div>
         {#each [
           { title: 'Share', path: 'M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z' },
@@ -1003,16 +887,11 @@
                 <span class="text-xs font-semibold" style="color:#00e5a0">Surfacer</span>
                 <span class="text-[10px] font-mono" style="color:#4a4a5e">{msg.timestamp} · 1 credit used</span>
               </div>
-              {#if msg.reasoning?.trim()}
-                <details class="ai-reasoning-box mb-2" open={reasoningVisibility === 'show'}>
-                  <summary class="ai-reasoning-summary">Reasoning trace</summary>
-                  <div class="ai-reasoning text-xs leading-relaxed mt-1.5">
-                    {@html renderMarkdown(msg.reasoning || '')}
-                  </div>
-                </details>
-              {/if}
               <div class="ai-content text-sm leading-relaxed" style="color:rgba(255,255,255,0.8)">
-                {@html renderMarkdown(msg.content)}{#if msg.streaming}<span class="typing-cursor"></span>{/if}
+                {#if msg.streaming}
+                  <span class="generation-dots" aria-label="Generating response"><span></span><span></span><span></span></span>
+                {/if}
+                {@html renderMarkdown(msg.content)}
               </div>
               {#if !msg.streaming}
                 <div class="flex items-center gap-2 mt-2.5">
@@ -1116,36 +995,29 @@
     opacity: 0.4;
   }
 
-  /* Typing cursor */
-  :global(.typing-cursor) {
-    display: inline-block;
-    width: 2px;
-    height: 0.9em;
-    background: #00e5a0;
-    margin-left: 1px;
+  .generation-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-right: 0.45rem;
     vertical-align: middle;
-    animation: blink 1s step-end infinite;
   }
 
-  .ai-reasoning-box {
-    border: 1px solid #ffffff12;
-    border-radius: 10px;
-    background: #101018;
-    padding: 0.5rem 0.65rem;
+  .generation-dots span {
+    width: 0.38rem;
+    height: 0.38rem;
+    border-radius: 999px;
+    background: #00e5a0;
+    opacity: 0.3;
+    animation: pulseDot 1s infinite ease-in-out;
   }
 
-  .ai-reasoning-summary {
-    cursor: pointer;
-    color: #8f92a8;
-    font-size: 0.7rem;
-    font-family: 'JetBrains Mono', monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    user-select: none;
+  .generation-dots span:nth-child(2) {
+    animation-delay: 0.16s;
   }
 
-  .ai-reasoning {
-    color: #a5a9c3;
+  .generation-dots span:nth-child(3) {
+    animation-delay: 0.32s;
   }
 
   /* Message animation */
@@ -1276,8 +1148,15 @@
     0%   { opacity: 0; transform: translateY(8px); }
     100% { opacity: 1; transform: translateY(0); }
   }
-  @keyframes blink {
-    0%, 100% { opacity: 1; }
-    50%       { opacity: 0; }
+
+  @keyframes pulseDot {
+    0%, 80%, 100% {
+      opacity: 0.25;
+      transform: translateY(0);
+    }
+    40% {
+      opacity: 1;
+      transform: translateY(-2px);
+    }
   }
 </style>

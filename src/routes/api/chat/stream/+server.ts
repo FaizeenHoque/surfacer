@@ -27,13 +27,10 @@ type EmbeddingApiResponse = {
   data?: Array<{ embedding?: number[] }>;
 };
 
-type ChatDeltaEvent = {
+type ChatCompletionApiResponse = {
   choices?: Array<{
-    delta?: {
+    message?: {
       content?: unknown;
-      reasoning?: unknown;
-      reasoning_content?: unknown;
-      reasoningContent?: unknown;
     };
   }>;
 };
@@ -176,7 +173,7 @@ async function buildPromptContext(
   return context.slice(0, maxContextChars);
 }
 
-async function* streamChatCompletions(
+async function createChatCompletion(
   apiKey: string,
   referer: string,
   appTitle: string,
@@ -191,7 +188,7 @@ async function* streamChatCompletions(
     reasoning?: { enabled: boolean };
   } = {
     model,
-    stream: true,
+    stream: false,
     messages,
     max_tokens: 1024,
   };
@@ -226,57 +223,30 @@ async function* streamChatCompletions(
     throw new Error(err.error?.message || err.message || raw || `Provider returned error (${response.status})`);
   }
 
-  if (!response.body) {
-    throw new Error('No stream received from provider');
-  }
+  const raw = await response.text();
+  const parsed = parseJsonSafe<ChatCompletionApiResponse & { error?: { message?: string }; message?: string }>(raw) || {};
+  let content = normalizeDeltaText(parsed.choices?.[0]?.message?.content);
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
+  // Some Gemma responses can come back empty with reasoning enabled; retry once without reasoning.
+  if (!content.trim() && model === 'google/gemma-4-26b-a4b-it:free' && body.reasoning) {
+    const fallbackBody = { ...body };
+    delete fallbackBody.reasoning;
+    const fallbackResponse = await sendRequest(fallbackBody);
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      buffer += decoder.decode();
-      break;
+    if (!fallbackResponse.ok) {
+      const fallbackRaw = await fallbackResponse.text();
+      const fallbackErr = parseJsonSafe<{ error?: { message?: string }; message?: string }>(fallbackRaw) || {};
+      throw new Error(
+        fallbackErr.error?.message || fallbackErr.message || fallbackRaw || `Provider returned error (${fallbackResponse.status})`
+      );
     }
 
-    buffer += decoder.decode(value, { stream: true });
-    let newlineIndex = buffer.indexOf('\n');
-
-    while (newlineIndex >= 0) {
-      const line = buffer.slice(0, newlineIndex).trim();
-      buffer = buffer.slice(newlineIndex + 1);
-
-      if (line.startsWith('data:')) {
-        const payload = line.slice(5).trim();
-        if (payload === '[DONE]') {
-          return;
-        }
-
-        try {
-          yield JSON.parse(payload) as ChatDeltaEvent;
-        } catch {
-          // Ignore non-JSON keepalive fragments.
-        }
-      }
-
-      newlineIndex = buffer.indexOf('\n');
-    }
+    const fallbackRaw = await fallbackResponse.text();
+    const fallbackParsed = parseJsonSafe<ChatCompletionApiResponse>(fallbackRaw) || {};
+    content = normalizeDeltaText(fallbackParsed.choices?.[0]?.message?.content);
   }
 
-  // Parse any trailing, non-newline-terminated SSE line.
-  const tail = buffer.trim();
-  if (tail.startsWith('data:')) {
-    const payload = tail.slice(5).trim();
-    if (payload && payload !== '[DONE]') {
-      try {
-        yield JSON.parse(payload) as ChatDeltaEvent;
-      } catch {
-        // Ignore malformed tail payloads.
-      }
-    }
-  }
+  return content.trim();
 }
 
 function normalizeDeltaText(value: unknown) {
@@ -393,77 +363,14 @@ export const POST: RequestHandler = async ({ request }) => {
       },
     ];
 
-    const encoder = new TextEncoder();
+    const assistantResponse = await createChatCompletion(apiKey, referer, appTitle, model, chatMessages);
 
-    return new Response(
-      new ReadableStream({
-        async start(controller) {
-          let heartbeat: ReturnType<typeof setInterval> | null = null;
-          try {
-            let assistantResponse = '';
+    if (!assistantResponse) {
+      return json({ error: 'Model returned an empty response. Please try again.' }, { status: 502 });
+    }
 
-            const sendEvent = (type: 'content' | 'reasoning' | 'done', delta = '') => {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type, delta })}\n\n`));
-            };
-
-            controller.enqueue(encoder.encode(': stream-open\n\n'));
-
-            // Keep proxies from buffering by sending lightweight SSE comments.
-            heartbeat = setInterval(() => {
-              try {
-                controller.enqueue(encoder.encode(': ping\n\n'));
-              } catch {
-                // Ignore if stream is already closed.
-              }
-            }, 1000);
-
-            for await (const event of streamChatCompletions(apiKey, referer, appTitle, model, chatMessages)) {
-              const deltaNode = event?.choices?.[0]?.delta;
-
-              const contentDelta = normalizeDeltaText(deltaNode?.content);
-              const reasoningDelta =
-                normalizeDeltaText(deltaNode?.reasoning) ||
-                normalizeDeltaText(deltaNode?.reasoning_content) ||
-                normalizeDeltaText(deltaNode?.reasoningContent);
-
-              if (reasoningDelta) {
-                sendEvent('reasoning', reasoningDelta);
-              }
-
-              if (contentDelta) {
-                assistantResponse += contentDelta;
-                sendEvent('content', contentDelta);
-              }
-            }
-
-            sendEvent('done');
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-
-            if (assistantResponse.trim()) {
-              await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
-            }
-            if (heartbeat) {
-              clearInterval(heartbeat);
-            }
-            controller.close();
-          } catch (streamErr: unknown) {
-            if (heartbeat) {
-              clearInterval(heartbeat);
-            }
-            const streamMessage = streamErr instanceof Error ? streamErr.message : 'Streaming failed';
-            controller.error(new Error(streamMessage));
-          }
-        },
-      }),
-      {
-        headers: {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-transform',
-          Connection: 'keep-alive',
-          'X-Accel-Buffering': 'no',
-        },
-      }
-    );
+    await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse);
+    return json({ message: assistantResponse });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unexpected chat error';
     return json({ error: message }, { status: 500 });

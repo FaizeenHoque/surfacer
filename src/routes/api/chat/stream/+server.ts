@@ -1,6 +1,5 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { OpenRouter } from '@openrouter/sdk';
 import { PDFParse } from 'pdf-parse';
 import { env } from '$env/dynamic/private';
 import {
@@ -15,7 +14,9 @@ import {
 const ALLOWED_MODELS = new Set([
   'minimax/minimax-m2.5:free',
   'google/gemini-2.0-flash-exp:free',
+  'google/gemini-2.5-flash',
   'meta-llama/llama-3.3-70b-instruct:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
 ]);
 const FILE_TEXT_CACHE = new Map<string, { text: string; updatedAt: number }>();
 const FILE_EMBEDDINGS_CACHE = new Map<string, { chunks: string[]; vectors: number[][]; updatedAt: number }>();
@@ -23,9 +24,21 @@ const MAX_CACHE_ENTRIES = 20;
 const MAX_CONTEXT_MESSAGES = 16;
 const EMBEDDING_MODEL = 'nvidia/llama-nemotron-embed-vl-1b-v2:free';
 const EMBEDDING_API_URL = 'https://openrouter.ai/api/v1/embeddings';
+const CHAT_COMPLETIONS_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 type EmbeddingApiResponse = {
   data?: Array<{ embedding?: number[] }>;
+};
+
+type ChatDeltaEvent = {
+  choices?: Array<{
+    delta?: {
+      content?: unknown;
+      reasoning?: unknown;
+      reasoning_content?: unknown;
+      reasoningContent?: unknown;
+    };
+  }>;
 };
 
 function getCachedFileText(filePath: string) {
@@ -112,9 +125,10 @@ async function buildPromptContext(
   question: string,
   apiKey: string,
   referer: string,
-  title: string
+  title: string,
+  maxContextChars: number
 ) {
-  if (fileText.length <= 22000) {
+  if (fileText.length <= maxContextChars) {
     return fileText;
   }
 
@@ -151,7 +165,83 @@ async function buildPromptContext(
 
   const context = [chunks[0] || '', ...ranked].join('\n\n');
 
-  return context.slice(0, 28000);
+  return context.slice(0, maxContextChars);
+}
+
+async function* streamChatCompletions(
+  apiKey: string,
+  referer: string,
+  appTitle: string,
+  model: string,
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
+) {
+  const body: {
+    model: string;
+    stream: boolean;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+    max_tokens?: number;
+  } = {
+    model,
+    stream: true,
+    messages,
+  };
+
+  // Llama free providers are often strict about optional generation params.
+  if (model !== 'meta-llama/llama-3.3-70b-instruct:free') {
+    body.max_tokens = 1024;
+  }
+
+  const response = await fetch(CHAT_COMPLETIONS_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': referer,
+      'X-OpenRouter-Title': appTitle,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const err = (await response.json().catch(() => ({}))) as { error?: { message?: string }; message?: string };
+    throw new Error(err.error?.message || err.message || 'Provider returned error');
+  }
+
+  if (!response.body) {
+    throw new Error('No stream received from provider');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    let newlineIndex = buffer.indexOf('\n');
+
+    while (newlineIndex >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+
+      if (line.startsWith('data:')) {
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') {
+          return;
+        }
+
+        try {
+          yield JSON.parse(payload) as ChatDeltaEvent;
+        } catch {
+          // Ignore non-JSON keepalive fragments.
+        }
+      }
+
+      newlineIndex = buffer.indexOf('\n');
+    }
+  }
 }
 
 function normalizeDeltaText(value: unknown) {
@@ -239,44 +329,32 @@ export const POST: RequestHandler = async ({ request }) => {
 
     const referer = env.OPENROUTER_SITE_URL || env.SITE_URL || 'http://localhost:5173';
     const appTitle = env.OPENROUTER_SITE_NAME || 'Surfacer';
-    const promptContext = await buildPromptContext(filePath, fileText, message, apiKey, referer, appTitle);
+    const maxContextChars = model === 'meta-llama/llama-3.3-70b-instruct:free' ? 16000 : 28000;
+    const promptContext = await buildPromptContext(filePath, fileText, message, apiKey, referer, appTitle, maxContextChars);
     const session = await getOrCreateChatSession(supabase, user.id, filePath, fileName);
     const priorMessages = (await listChatMessages(supabase, session.id)).slice(-MAX_CONTEXT_MESSAGES);
 
     await appendChatMessage(supabase, session.id, user.id, 'user', message);
 
-    const openRouter = new OpenRouter({
-      apiKey,
-      httpReferer: referer,
-      appTitle,
-    });
-
-    const stream = await openRouter.chat.send({
-      chatRequest: {
-        model,
-        stream: true,
-        maxCompletionTokens: 1024,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are Surfacer, a file analysis assistant. Answer only from the provided file context and the chat history. Format your response in clean Markdown with short headings, bullet lists, numbered steps when helpful, and Markdown tables when comparing facts. Use LaTeX math blocks for equations. Do not output raw JSON. If data is missing, say so clearly.',
-          },
-          {
-            role: 'user',
-            content: `File name: ${fileName}\n\nRelevant file excerpts:\n${promptContext}`,
-          },
-          ...priorMessages.map((entry) => ({
-            role: entry.role,
-            content: entry.content,
-          })),
-          {
-            role: 'user',
-            content: `Question: ${message}`,
-          },
-        ],
+    const chatMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      {
+        role: 'system',
+        content:
+          'You are Surfacer, a file analysis assistant. Answer only from the provided file context and the chat history. Format your response in clean Markdown with short headings, bullet lists, numbered steps when helpful, and Markdown tables when comparing facts. Use LaTeX math blocks for equations. Do not output raw JSON. If data is missing, say so clearly.',
       },
-    });
+      {
+        role: 'user',
+        content: `File name: ${fileName}\n\nRelevant file excerpts:\n${promptContext}`,
+      },
+      ...priorMessages.map((entry) => ({
+        role: entry.role,
+        content: entry.content,
+      })),
+      {
+        role: 'user',
+        content: `Question: ${message}`,
+      },
+    ];
 
     const encoder = new TextEncoder();
 
@@ -290,15 +368,8 @@ export const POST: RequestHandler = async ({ request }) => {
               controller.enqueue(encoder.encode(`${JSON.stringify({ type, delta })}\n`));
             };
 
-            for await (const event of stream) {
-              const deltaNode = event?.choices?.[0]?.delta as
-                | {
-                    content?: unknown;
-                    reasoning?: unknown;
-                    reasoning_content?: unknown;
-                    reasoningContent?: unknown;
-                  }
-                | undefined;
+            for await (const event of streamChatCompletions(apiKey, referer, appTitle, model, chatMessages)) {
+              const deltaNode = event?.choices?.[0]?.delta;
 
               const contentDelta = normalizeDeltaText(deltaNode?.content);
               const reasoningDelta =

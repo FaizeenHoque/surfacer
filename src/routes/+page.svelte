@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import katex from 'katex';
   import { authStore } from '$lib/authStore';
   import { supabase } from '$lib/supabaseClient';
   import { goto } from '$app/navigation';
@@ -30,12 +31,13 @@
     { label: 'Minimax M2.5 (Free)', value: 'minimax/minimax-m2.5:free' },
     { label: 'Gemini 2.0 Flash (Free)', value: 'google/gemini-2.0-flash-exp:free' },
     { label: 'Llama 3.3 70B Instruct (Free)', value: 'meta-llama/llama-3.3-70b-instruct:free' },
+    { label: 'Nemotron 3 Super (Free)', value: 'nvidia/nemotron-3-super-120b-a12b:free' },
   ];
 
   type Message =
-    | { type: 'system'; text: string }
-    | { type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean }
-    | { type: 'user'; content: string; timestamp: string };
+    | { id: string; type: 'system'; text: string }
+    | { id: string; type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean }
+    | { id: string; type: 'user'; content: string; timestamp: string };
 
   type StoredFile = {
     path: string;
@@ -98,12 +100,50 @@
       .replace(/'/g, '&#39;');
   }
 
+  function makeMessageId(prefix: string) {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function isNearBottom(threshold = 96) {
+    if (!messagesEl) return true;
+    const distance = messagesEl.scrollHeight - (messagesEl.scrollTop + messagesEl.clientHeight);
+    return distance <= threshold;
+  }
+
+  function renderMathInline(expression: string) {
+    try {
+      return katex.renderToString(expression, { throwOnError: false, displayMode: false });
+    } catch {
+      return `<span class="math-inline">${escapeHtml(expression)}</span>`;
+    }
+  }
+
+  function renderMathBlock(expression: string) {
+    try {
+      return `<div class="math-block">${katex.renderToString(expression, { throwOnError: false, displayMode: true })}</div>`;
+    } catch {
+      return `<div class="math-block">${escapeHtml(expression)}</div>`;
+    }
+  }
+
   function formatInline(text: string) {
-    return escapeHtml(text)
+    const tokens: string[] = [];
+    const withMathTokens = text.replace(/\$([^$\n]+)\$/g, (_, expr: string) => {
+      const token = `MATH_INLINE_TOKEN_${tokens.length}`;
+      tokens.push(renderMathInline(expr.trim()));
+      return token;
+    });
+
+    let output = escapeHtml(withMathTokens)
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.+?)\*/g, '<em>$1</em>')
-      .replace(/\$([^$\n]+)\$/g, '<span class="math-inline">$1</span>');
+      .replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+    tokens.forEach((html, index) => {
+      output = output.replace(`MATH_INLINE_TOKEN_${index}`, html);
+    });
+
+    return output;
   }
 
   function isTableSeparator(line: string) {
@@ -143,9 +183,6 @@
   }
 
   function renderMarkdown(text: string, streaming = false) {
-    if (streaming) {
-      return escapeHtml(text).replace(/\n/g, '<br>');
-    }
 
     const lines = text.replace(/\r/g, '').split('\n');
     const blocks: string[] = [];
@@ -178,7 +215,7 @@
 
     const flushMath = () => {
       if (!mathLines.length) return;
-      blocks.push(`<div class="math-block">${escapeHtml(mathLines.join('\n'))}</div>`);
+      blocks.push(renderMathBlock(mathLines.join('\n').trim()));
       mathLines = [];
     };
 
@@ -355,9 +392,10 @@
     activeChatId = payload.chatId || null;
     const history = Array.isArray(payload.messages) ? payload.messages : [];
     messages = history.length
-      ? history.map((entry: { role: string; content: string; created_at: string }) => {
+      ? history.map((entry: { id?: string; role: string; content: string; created_at: string }) => {
           if (entry.role === 'assistant') {
             return {
+              id: entry.id || makeMessageId('ai'),
               type: 'ai' as const,
               content: entry.content,
               reasoning: '',
@@ -368,6 +406,7 @@
 
           if (entry.role === 'user') {
             return {
+              id: entry.id || makeMessageId('user'),
               type: 'user' as const,
               content: entry.content,
               timestamp: formatTimestamp(entry.created_at),
@@ -375,11 +414,12 @@
           }
 
           return {
+            id: entry.id || makeMessageId('system'),
             type: 'system' as const,
             text: entry.content,
           };
         })
-      : [{ type: 'system', text: `Ready to chat with ${fileName}` }];
+      : [{ id: makeMessageId('system'), type: 'system', text: `Ready to chat with ${fileName}` }];
   }
 
   async function selectFile(file: StoredFile) {
@@ -394,7 +434,7 @@
       scrollToBottom();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load chat history';
-      messages = [{ type: 'system', text: message }];
+      messages = [{ id: makeMessageId('system'), type: 'system', text: message }];
       activeChatId = null;
     } finally {
       isLoadingChat = false;
@@ -466,7 +506,7 @@
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Upload failed';
-      messages = [...messages, { type: 'system', text: message }];
+      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];
     } finally {
       isUploading = false;
       target.value = '';
@@ -504,7 +544,7 @@
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Delete failed';
-      messages = [...messages, { type: 'system', text: message }];
+      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];
     }
   }
 
@@ -512,7 +552,7 @@
     const text = promptValue.trim();
     if (!text || isThinking || isLoadingChat) return;
     if (!activeFilePath) {
-      messages = [...messages, { type: 'system', text: 'Upload and select a file first.' }];
+      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: 'Upload and select a file first.' }];
       return;
     }
 
@@ -520,9 +560,9 @@
     if (textareaEl) { textareaEl.style.height = 'auto'; }
 
     const now = formatTimestamp(new Date().toISOString());
-    messages = [...messages, { type: 'user', content: text, timestamp: now }];
+    messages = [...messages, { id: makeMessageId('user'), type: 'user', content: text, timestamp: now }];
     const aiIndex = messages.length;
-    messages = [...messages, { type: 'ai', content: '', timestamp: now, streaming: true }];
+    messages = [...messages, { id: makeMessageId('ai'), type: 'ai', content: '', reasoning: '', timestamp: now, streaming: true }];
     isThinking = true;
     scrollToBottom();
 
@@ -558,14 +598,32 @@
       let content = '';
       let reasoning = '';
       let streamBuffer = '';
+      let pendingRender = false;
 
-      const applyAiUpdate = () => {
-        const next = [...messages];
-        const target = next[aiIndex];
-        if (target && target.type === 'ai') {
-          next[aiIndex] = { ...target, content, reasoning, streaming: true };
-          messages = next;
+      const applyAiUpdate = (force = false) => {
+        if (!force && pendingRender) return;
+        pendingRender = true;
+
+        const render = () => {
+          pendingRender = false;
+          const wasNearBottom = isNearBottom();
+          const next = [...messages];
+          const target = next[aiIndex];
+          if (target && target.type === 'ai') {
+            next[aiIndex] = { ...target, content, reasoning, streaming: true };
+            messages = next;
+          }
+          if (wasNearBottom) {
+            scrollToBottom();
+          }
+        };
+
+        if (force) {
+          render();
+          return;
         }
+
+        requestAnimationFrame(render);
       };
 
       const handleEventLine = (line: string) => {
@@ -607,14 +665,14 @@
           handleEventLine(line);
           splitAt = streamBuffer.indexOf('\n');
         }
-
-        scrollToBottom();
       }
 
       streamBuffer += decoder.decode();
       if (streamBuffer.trim()) {
         handleEventLine(streamBuffer.trim());
       }
+
+      applyAiUpdate(true);
 
       const next = [...messages];
       const target = next[aiIndex];
@@ -627,7 +685,7 @@
       const next = [...messages];
       const target = next[aiIndex];
       if (target && target.type === 'ai') {
-        next[aiIndex] = { ...target, content: errorText, streaming: false };
+        next[aiIndex] = { ...target, content: errorText, reasoning: '', streaming: false };
         messages = next;
       }
     } finally {
@@ -885,7 +943,7 @@
 
     <!-- Messages -->
     <div bind:this={messagesEl} class="messages-wrap flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-5">
-      {#each messages as msg (msg)}
+      {#each messages as msg (msg.id)}
         {#if msg.type === 'system'}
           <div class="flex justify-center">
             <div class="flex items-center gap-2 px-4 py-2 rounded-full" style="background:#18181e; border:1px solid #ffffff0d">
@@ -910,12 +968,12 @@
                 <details class="ai-reasoning-box mb-2" open={reasoningVisibility === 'show'}>
                   <summary class="ai-reasoning-summary">Reasoning trace</summary>
                   <div class="ai-reasoning text-xs leading-relaxed mt-1.5">
-                    {@html renderMarkdown(msg.reasoning, msg.streaming)}
+                    {@html renderMarkdown(msg.reasoning || '')}
                   </div>
                 </details>
               {/if}
               <div class="ai-content text-sm leading-relaxed" style="color:rgba(255,255,255,0.8)">
-                {@html renderMarkdown(msg.content, msg.streaming)}{#if msg.streaming}<span class="typing-cursor"></span>{/if}
+                {@html renderMarkdown(msg.content)}{#if msg.streaming}<span class="typing-cursor"></span>{/if}
               </div>
               {#if !msg.streaming}
                 <div class="flex items-center gap-2 mt-2.5">
@@ -997,6 +1055,7 @@
 
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap');
+  @import 'katex/dist/katex.min.css';
 
   :global(*) { box-sizing: border-box; }
   :global(body) { margin: 0; font-family: 'Syne', sans-serif; background: #09090d; }

@@ -531,6 +531,240 @@
     return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  function safeFileStem(value: string) {
+    const stem = value.trim().replace(/\.[a-z0-9]+$/i, '');
+    return (stem || 'chat_export').replace(/[^a-z0-9_-]+/gi, '_').slice(0, 42);
+  }
+
+  function parseMarkdownTableRows(text: string) {
+    const lines = text.replace(/\r/g, '').split('\n');
+    for (let index = 0; index < lines.length - 1; index += 1) {
+      const header = lines[index].trim();
+      const separator = lines[index + 1].trim();
+      const looksLikeTable = header.includes('|') && /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(separator);
+      if (!looksLikeTable) continue;
+
+      const split = (line: string) =>
+        line
+          .trim()
+          .replace(/^\|/, '')
+          .replace(/\|$/, '')
+          .split('|')
+          .map((cell) => cell.trim());
+
+      const headers = split(header).map((entry, i) => entry || `column_${i + 1}`);
+      const rows: Record<string, string>[] = [];
+
+      let rowIndex = index + 2;
+      while (rowIndex < lines.length) {
+        const row = lines[rowIndex].trim();
+        if (!row || !row.includes('|')) break;
+        const cells = split(row);
+        const next: Record<string, string> = {};
+        headers.forEach((key, i) => {
+          next[key] = cells[i] || '';
+        });
+        rows.push(next);
+        rowIndex += 1;
+      }
+
+      if (rows.length) return rows;
+    }
+
+    return [] as Record<string, string>[];
+  }
+
+  function parseKeyValueRows(text: string) {
+    const map: Record<string, string> = {};
+    const lines = text.replace(/\r/g, '').split('\n');
+    for (const line of lines) {
+      const cleaned = line.replace(/^[-*]\s*/, '').trim();
+      const match = cleaned.match(/^([^:]{1,80}):\s+(.+)$/);
+      if (!match) continue;
+      map[match[1].trim()] = match[2].trim();
+    }
+    return Object.keys(map).length ? [map] : [];
+  }
+
+  function parseJsonRows(text: string) {
+    const cleaned = text
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
+    if (!cleaned) return [] as Record<string, unknown>[];
+
+    try {
+      const parsed = JSON.parse(cleaned) as unknown;
+      if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'object' && entry !== null)) {
+        return parsed as Record<string, unknown>[];
+      }
+      if (parsed && typeof parsed === 'object') {
+        return [parsed as Record<string, unknown>];
+      }
+    } catch {
+      return [];
+    }
+
+    return [] as Record<string, unknown>[];
+  }
+
+  function normalizeStructuredRows(text: string) {
+    const fromJson = parseJsonRows(text);
+    if (fromJson.length) {
+      return fromJson.map((row) =>
+        Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value == null ? '' : String(value)]))
+      );
+    }
+
+    const fromTable = parseMarkdownTableRows(text);
+    if (fromTable.length) return fromTable;
+
+    const fromKv = parseKeyValueRows(text);
+    if (fromKv.length) return fromKv;
+
+    return [{ response: text.replace(/\s+/g, ' ').trim() }];
+  }
+
+  function csvEscape(value: string) {
+    if (/[",\n]/.test(value)) {
+      return `"${value.replace(/"/g, '""')}"`;
+    }
+    return value;
+  }
+
+  function rowsToCsv(rows: Record<string, string>[]) {
+    const headers = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+    const lines = [headers.map(csvEscape).join(',')];
+
+    for (const row of rows) {
+      lines.push(headers.map((header) => csvEscape(row[header] || '')).join(','));
+    }
+
+    return lines.join('\n');
+  }
+
+  function downloadBlob(fileName: string, blob: Blob) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function notifySystem(text: string) {
+    messages = [...messages, { id: makeMessageId('system'), type: 'system', text }];
+  }
+
+  async function copyAssistantMessage(msg: Extract<Message, { type: 'ai' }>) {
+    const text = msg.content?.trim() || '';
+    if (!text) {
+      notifySystem('Nothing to copy yet.');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      notifySystem('Response copied to clipboard.');
+    } catch {
+      notifySystem('Clipboard permission denied.');
+    }
+  }
+
+  async function exportAssistantMessage(msg: Extract<Message, { type: 'ai' }>) {
+    const text = msg.content?.trim() || '';
+    if (!text) {
+      notifySystem('No response to export yet.');
+      return;
+    }
+
+    const selected = (window.prompt('Choose export format: csv, json, or xlsx', 'csv') || '').trim().toLowerCase();
+    if (!selected) return;
+    if (!['csv', 'json', 'xlsx'].includes(selected)) {
+      notifySystem('Invalid format. Use csv, json, or xlsx.');
+      return;
+    }
+
+    const rows = normalizeStructuredRows(text);
+    const stem = `${safeFileStem(activeFileName || 'chat')}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`;
+
+    if (selected === 'csv') {
+      const csv = rowsToCsv(rows);
+      downloadBlob(`${stem}.csv`, new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      notifySystem('CSV export downloaded.');
+      return;
+    }
+
+    if (selected === 'json') {
+      downloadBlob(`${stem}.json`, new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json;charset=utf-8' }));
+      notifySystem('JSON export downloaded.');
+      return;
+    }
+
+    const XLSX = await import('xlsx');
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Extraction');
+    const xlsx = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    downloadBlob(`${stem}.xlsx`, new Blob([xlsx], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    notifySystem('Excel export downloaded.');
+  }
+
+  async function shareCurrentChat() {
+    const token = await getAccessToken();
+    if (!token) throw new Error('Session expired');
+
+    const response = await fetch('/api/chat/share', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        chatId: activeChatId,
+        filePath: activeFilePath,
+        fileName: activeFileName,
+        messages,
+      }),
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to create share link');
+    }
+
+    return payload.shareUrl as string;
+  }
+
+  async function shareChatAction() {
+    try {
+      if (!messages.length) {
+        notifySystem('No chat content available to share yet.');
+        return;
+      }
+
+      const shareUrl = await shareCurrentChat();
+
+      if (navigator.share) {
+        await navigator.share({
+          title: activeFileName || 'Shared Surfacer chat',
+          text: 'Shared Surfacer chat',
+          url: shareUrl,
+        });
+      } else {
+        await navigator.clipboard.writeText(shareUrl);
+      }
+
+      notifySystem('Share link ready. It was copied to your clipboard if native sharing was unavailable.');
+    } catch (err: unknown) {
+      notifySystem(err instanceof Error ? err.message : 'Failed to share chat');
+    }
+  }
+
   function shorten(text: string, max = 96) {
     const normalized = text.replace(/\s+/g, ' ').trim();
     if (normalized.length <= max) return normalized;
@@ -1512,7 +1746,7 @@
                 </span>
               </button>
               <button
-                class="history-action-btn"
+                class="template-delete-btn"
                 type="button"
                 onclick={() => void deleteTemplate(template.id)}
                 disabled={deletingTemplateId === template.id}
@@ -1583,11 +1817,11 @@
             </svg>
           </button>
         {/if}
-        <div class="flex items-center gap-2 px-3 py-1.5 rounded-full" style="background:#18181e; border:1px solid #ffffff0d">
+        <div class="flex items-center gap-2 px-3 py-1.5 rounded-full min-w-0 max-w-[52vw]" style="background:#18181e; border:1px solid #ffffff0d">
           <svg class="w-3 h-3 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
           </svg>
-          <span class="text-xs font-mono" style="color:rgba(255,255,255,0.8)">{activeFileName || 'No file selected'}</span>
+          <span class="text-xs font-mono truncate" title={activeFileName || 'No file selected'} style="color:rgba(255,255,255,0.8)">{activeFileName || 'No file selected'}</span>
         </div>
       </div>
 
@@ -1700,18 +1934,24 @@
                   </div>
                 {/if}
                 <div class="flex items-center gap-2 mt-2.5">
-                  {#each [
-                    { label: 'Copy',  path: 'M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z' },
-                    { label: 'CSV',   path: 'M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
-                    { label: 'Share', path: 'M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z' },
-                  ] as action (action)}
-                    <button class="action-btn flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono transition-all" style="color:#4a4a5e; border:1px solid transparent">
-                      <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d={action.path}/>
-                      </svg>
-                      {action.label}
-                    </button>
-                  {/each}
+                  <button class="action-btn flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono transition-all" style="color:#4a4a5e; border:1px solid transparent" onclick={() => void copyAssistantMessage(msg)}>
+                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                    </svg>
+                    Copy
+                  </button>
+                  <button class="action-btn flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono transition-all" style="color:#4a4a5e; border:1px solid transparent" onclick={() => void exportAssistantMessage(msg)}>
+                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                    CSV
+                  </button>
+                  <button class="action-btn flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono transition-all" style="color:#4a4a5e; border:1px solid transparent" onclick={() => void shareChatAction()}>
+                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
+                    </svg>
+                    Share
+                  </button>
                 </div>
               {/if}
             </div>
@@ -2012,6 +2252,26 @@
   }
   .template-create-btn:disabled {
     opacity: 0.65;
+    cursor: not-allowed;
+  }
+  .template-delete-btn {
+    border: 1px solid #7f1d1d;
+    background: #301014;
+    color: #fecaca;
+    border-radius: 0.45rem;
+    padding: 0.43rem 0.55rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    transition: all 0.15s ease;
+  }
+  .template-delete-btn:hover:not(:disabled) {
+    background: #4a151d;
+    border-color: #b91c1c;
+  }
+  .template-delete-btn:disabled {
+    opacity: 0.55;
     cursor: not-allowed;
   }
   .chip:hover { border-color: #00e5a026 !important; color: #00e5a0 !important; background: #00e5a014 !important; }

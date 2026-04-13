@@ -42,6 +42,16 @@ export type ExtractionTemplateRow = {
   updated_at: string;
 };
 
+export type SharedChatRow = {
+  id: string;
+  user_id: string;
+  chat_id: string | null;
+  file_path: string | null;
+  file_name: string | null;
+  payload: unknown;
+  created_at: string;
+};
+
 export function createAuthedSupabase(token: string) {
   return createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
     global: {
@@ -272,6 +282,49 @@ export async function deleteExtractionTemplate(
   }
 
   return { ok: true };
+}
+
+export async function createSharedChat(
+  supabase: SupabaseClient,
+  input: {
+    userId: string;
+    chatId?: string | null;
+    filePath?: string | null;
+    fileName?: string | null;
+    payload: unknown;
+  }
+) {
+  const { data, error } = await supabase
+    .from('shared_chats')
+    .insert({
+      user_id: input.userId,
+      chat_id: input.chatId || null,
+      file_path: input.filePath || null,
+      file_name: input.fileName || null,
+      payload: input.payload,
+    })
+    .select('id, user_id, chat_id, file_path, file_name, payload, created_at')
+    .single();
+
+  if (error || !data) {
+    throw error || new Error('Failed to create chat share');
+  }
+
+  return data as SharedChatRow;
+}
+
+export async function getSharedChatById(supabase: SupabaseClient, id: string) {
+  const { data, error } = await supabase
+    .from('shared_chats')
+    .select('id, user_id, chat_id, file_path, file_name, payload, created_at')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return (data || null) as SharedChatRow | null;
 }
 
 export async function getUserCredits(supabase: SupabaseClient, userId: string) {

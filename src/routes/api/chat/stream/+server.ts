@@ -357,7 +357,7 @@ export const POST: RequestHandler = async ({ request }) => {
             let assistantResponse = '';
 
             const sendEvent = (type: 'content' | 'reasoning' | 'done', delta = '') => {
-              controller.enqueue(encoder.encode(`${JSON.stringify({ type, delta })}\n`));
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type, delta })}\n\n`));
             };
 
             for await (const event of streamChatCompletions(apiKey, referer, appTitle, model, chatMessages)) {
@@ -380,6 +380,7 @@ export const POST: RequestHandler = async ({ request }) => {
             }
 
             sendEvent('done');
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
 
             if (assistantResponse.trim()) {
               await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
@@ -393,8 +394,10 @@ export const POST: RequestHandler = async ({ request }) => {
       }),
       {
         headers: {
-          'Content-Type': 'application/x-ndjson; charset=utf-8',
-          'Cache-Control': 'no-cache',
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
         },
       }
     );

@@ -622,10 +622,14 @@
       };
 
       const handleEventLine = (line: string) => {
-        if (!line.trim()) return;
+        const raw = line.trim();
+        if (!raw || raw.startsWith('event:')) return;
+
+        const payloadLine = raw.startsWith('data:') ? raw.slice(5).trim() : raw;
+        if (!payloadLine || payloadLine === '[DONE]') return;
 
         try {
-          const payload = JSON.parse(line) as { type?: string; delta?: string };
+          const payload = JSON.parse(payloadLine) as { type?: string; delta?: string };
           if (payload.type === 'reasoning' && payload.delta) {
             reasoning += payload.delta;
             applyAiUpdate();
@@ -642,7 +646,7 @@
             return;
           }
         } catch {
-          content += line;
+          content += payloadLine;
           applyAiUpdate();
         }
       };

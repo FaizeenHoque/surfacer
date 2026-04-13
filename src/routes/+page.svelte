@@ -16,7 +16,7 @@
   let isThinking = $state(false);
   let isLoadingChat = $state(false);
   let isUploading = $state(false);
-  let selectedModel = $state('minimax/minimax-m2.5:free');
+  let selectedModel = $state('nvidia/nemotron-3-super-120b-a12b:free');
   let reasoningVisibility = $state<'hide' | 'show'>('hide');
   let messages = $state<Message[]>([]);
   let currentUser = $state<{ id: string; email: string } | null>(null);
@@ -27,12 +27,7 @@
   let textareaEl: HTMLTextAreaElement;
   let fileInputEl: HTMLInputElement;
 
-  const modelOptions = [
-    { label: 'Minimax M2.5 (Free)', value: 'minimax/minimax-m2.5:free' },
-    { label: 'Gemini 2.0 Flash (Free)', value: 'google/gemini-2.0-flash-exp:free' },
-    { label: 'Llama 3.3 70B Instruct (Free)', value: 'meta-llama/llama-3.3-70b-instruct:free' },
-    { label: 'Nemotron 3 Super (Free)', value: 'nvidia/nemotron-3-super-120b-a12b:free' },
-  ];
+  const modelOptions = [{ label: 'Nemotron 3 Super (Free)', value: 'nvidia/nemotron-3-super-120b-a12b:free' }];
 
   type Message =
     | { id: string; type: 'system'; text: string }

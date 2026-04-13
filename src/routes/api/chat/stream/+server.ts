@@ -11,11 +11,7 @@ import {
   listChatMessages,
 } from '$lib/server/chats';
 
-const ALLOWED_MODELS = new Set([
-  'google/gemini-2.5-flash',
-  'meta-llama/llama-3.3-70b-instruct:free',
-  'nvidia/nemotron-3-super-120b-a12b:free',
-]);
+const ALLOWED_MODELS = new Set(['nvidia/nemotron-3-super-120b-a12b:free']);
 const FILE_TEXT_CACHE = new Map<string, { text: string; updatedAt: number }>();
 const FILE_EMBEDDINGS_CACHE = new Map<string, { chunks: string[]; vectors: number[][]; updatedAt: number }>();
 const MAX_CACHE_ENTRIES = 20;
@@ -177,17 +173,13 @@ async function* streamChatCompletions(
     model: string;
     stream: boolean;
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
-    max_tokens?: number;
+    max_tokens: number;
   } = {
     model,
     stream: true,
     messages,
+    max_tokens: 1024,
   };
-
-  // Llama free providers are often strict about optional generation params.
-  if (model !== 'meta-llama/llama-3.3-70b-instruct:free') {
-    body.max_tokens = 1024;
-  }
 
   const response = await fetch(CHAT_COMPLETIONS_URL, {
     method: 'POST',
@@ -294,7 +286,9 @@ export const POST: RequestHandler = async ({ request }) => {
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
     const filePath = typeof payload.filePath === 'string' ? payload.filePath : '';
     const requestedModel = typeof payload.model === 'string' ? payload.model : '';
-    const model = ALLOWED_MODELS.has(requestedModel) ? requestedModel : 'minimax/minimax-m2.5:free';
+    const model = ALLOWED_MODELS.has(requestedModel)
+      ? requestedModel
+      : 'nvidia/nemotron-3-super-120b-a12b:free';
 
     if (!message) {
       return json({ error: 'Message is required' }, { status: 400 });
@@ -327,7 +321,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
     const referer = env.OPENROUTER_SITE_URL || env.SITE_URL || 'http://localhost:5173';
     const appTitle = env.OPENROUTER_SITE_NAME || 'Surfacer';
-    const maxContextChars = model === 'meta-llama/llama-3.3-70b-instruct:free' ? 16000 : 28000;
+    const maxContextChars = 28000;
     const promptContext = await buildPromptContext(filePath, fileText, message, apiKey, referer, appTitle, maxContextChars);
     const session = await getOrCreateChatSession(supabase, user.id, filePath, fileName);
     const priorMessages = (await listChatMessages(supabase, session.id)).slice(-MAX_CONTEXT_MESSAGES);

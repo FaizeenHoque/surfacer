@@ -127,3 +127,35 @@ export async function appendChatMessage(
 
   return data as ChatMessageRow;
 }
+
+export async function getUserCredits(supabase: SupabaseClient, userId: string) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('credits')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return 0;
+  }
+
+  return typeof data.credits === 'number' ? data.credits : 0;
+}
+
+export async function setUserCredits(supabase: SupabaseClient, userId: string, credits: number) {
+  const nextCredits = Math.max(0, Math.floor(credits));
+  const { error } = await supabase
+    .from('profiles')
+    .update({ credits: nextCredits })
+    .eq('id', userId);
+
+  if (error) {
+    throw error;
+  }
+
+  return nextCredits;
+}

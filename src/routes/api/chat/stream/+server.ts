@@ -6,14 +6,16 @@ import {
   appendChatMessage,
   createAuthedSupabase,
   fileNameFromPath,
+  getUserCredits,
   getOrCreateChatSession,
   getUserFromToken,
   listChatMessages,
+  setUserCredits,
 } from '$lib/server/chats';
 
 const ALLOWED_MODELS = new Set([
-  'nvidia/nemotron-3-super-120b-a12b:free',
-  'google/gemma-4-26b-a4b-it:free',
+  'microsoft/Phi-4',
+  'deepseek/DeepSeek-V3-0324',
 ]);
 const FILE_TEXT_CACHE = new Map<string, { text: string; updatedAt: number }>();
 const FILE_EMBEDDINGS_CACHE = new Map<string, { chunks: string[]; vectors: number[][]; updatedAt: number }>();
@@ -21,7 +23,24 @@ const MAX_CACHE_ENTRIES = 20;
 const MAX_CONTEXT_MESSAGES = 16;
 const EMBEDDING_MODEL = 'nvidia/llama-nemotron-embed-vl-1b-v2:free';
 const EMBEDDING_API_URL = 'https://openrouter.ai/api/v1/embeddings';
-const CHAT_COMPLETIONS_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const CHAT_COMPLETIONS_URL = 'https://models.github.ai/inference/chat/completions';
+const BASIC_MODEL = 'microsoft/Phi-4';
+const PREMIUM_MODEL = 'deepseek/DeepSeek-V3-0324';
+const DEBUG_CHAT = (env.DEBUG_CHAT || '').toLowerCase() === '1' || (env.DEBUG_CHAT || '').toLowerCase() === 'true';
+const MAX_CONCURRENT_CHAT_REQUESTS = 1;
+const CHAT_BURST_WINDOW_MS = 15_000;
+const CHAT_BURST_LIMIT = 3;
+
+type RateLimitState = {
+  activeCount: number;
+  recentStarts: number[];
+};
+
+type RateLimitLease = {
+  release: () => void;
+};
+
+const CHAT_RATE_LIMITS = new Map<string, RateLimitState>();
 
 type EmbeddingApiResponse = {
   data?: Array<{ embedding?: number[] }>;
@@ -35,6 +54,17 @@ type ChatCompletionApiResponse = {
   }>;
 };
 
+type ChatDeltaEvent = {
+  choices?: Array<{
+    delta?: {
+      content?: unknown;
+      reasoning?: unknown;
+      reasoning_content?: unknown;
+      reasoningContent?: unknown;
+    };
+  }>;
+};
+
 function parseJsonSafe<T>(raw: string): T | null {
   if (!raw) return null;
   try {
@@ -42,6 +72,79 @@ function parseJsonSafe<T>(raw: string): T | null {
   } catch {
     return null;
   }
+}
+
+function clipText(value: string, max = 500) {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}...`;
+}
+
+function debugLog(requestId: string, stage: string, payload?: Record<string, unknown>) {
+  if (!DEBUG_CHAT) return;
+  const prefix = `[chat:${requestId}] ${stage}`;
+  if (payload) {
+    console.info(prefix, payload);
+    return;
+  }
+  console.info(prefix);
+}
+
+function acquireChatRateLimit(userId: string):
+  | { allowed: true; lease: RateLimitLease }
+  | { allowed: false; retryAfterSeconds: number; message: string } {
+  const now = Date.now();
+  const state = CHAT_RATE_LIMITS.get(userId) || { activeCount: 0, recentStarts: [] };
+  state.recentStarts = state.recentStarts.filter((startedAt) => now - startedAt < CHAT_BURST_WINDOW_MS);
+
+  if (state.activeCount >= MAX_CONCURRENT_CHAT_REQUESTS) {
+    const retryAfterSeconds = 3;
+    CHAT_RATE_LIMITS.set(userId, state);
+    return {
+      allowed: false,
+      retryAfterSeconds,
+      message: 'Please wait for the current response to finish before sending another message.',
+    };
+  }
+
+  if (state.recentStarts.length >= CHAT_BURST_LIMIT) {
+    const earliest = state.recentStarts[0] || now;
+    const retryAfterSeconds = Math.max(1, Math.ceil((CHAT_BURST_WINDOW_MS - (now - earliest)) / 1000));
+    CHAT_RATE_LIMITS.set(userId, state);
+    return {
+      allowed: false,
+      retryAfterSeconds,
+      message: 'You are sending messages too quickly. Please slow down and try again shortly.',
+    };
+  }
+
+  state.activeCount += 1;
+  state.recentStarts.push(now);
+  CHAT_RATE_LIMITS.set(userId, state);
+
+  let released = false;
+  return {
+    allowed: true,
+    lease: {
+      release() {
+        if (released) return;
+        released = true;
+
+        const current = CHAT_RATE_LIMITS.get(userId);
+        if (!current) return;
+
+        const nowAtRelease = Date.now();
+        current.activeCount = Math.max(0, current.activeCount - 1);
+        current.recentStarts = current.recentStarts.filter((startedAt) => nowAtRelease - startedAt < CHAT_BURST_WINDOW_MS);
+
+        if (current.activeCount <= 0 && current.recentStarts.length === 0) {
+          CHAT_RATE_LIMITS.delete(userId);
+          return;
+        }
+
+        CHAT_RATE_LIMITS.set(userId, current);
+      },
+    },
+  };
 }
 
 function getCachedFileText(filePath: string) {
@@ -175,25 +278,24 @@ async function buildPromptContext(
 
 async function createChatCompletion(
   apiKey: string,
-  referer: string,
-  appTitle: string,
   model: string,
-  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
-) {
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  requestId: string
+) : Promise<AsyncGenerator<ChatDeltaEvent, void, unknown>> {
   const body: {
     model: string;
     stream: boolean;
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
-    max_tokens: number;
+    max_completion_tokens: number;
     reasoning?: { enabled: boolean };
   } = {
     model,
-    stream: false,
+    stream: true,
     messages,
-    max_tokens: 1024,
+    max_completion_tokens: 1024,
   };
 
-  if (model === 'google/gemma-4-26b-a4b-it:free') {
+  if (model === PREMIUM_MODEL) {
     body.reasoning = { enabled: true };
   }
 
@@ -203,15 +305,27 @@ async function createChatCompletion(
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': referer,
-        'X-OpenRouter-Title': appTitle,
       },
       body: JSON.stringify(payload),
     });
 
+  debugLog(requestId, 'provider_request', {
+    model,
+    messageCount: messages.length,
+    reasoningEnabled: Boolean(body.reasoning?.enabled),
+  });
+
   let response = await sendRequest(body);
 
-  if (!response.ok && model === 'google/gemma-4-26b-a4b-it:free' && body.reasoning) {
+  if (!response.ok && model === PREMIUM_MODEL && body.reasoning) {
+    const firstRaw = await response.text();
+    debugLog(requestId, 'provider_retry_without_reasoning', {
+      status: response.status,
+      statusText: response.statusText,
+      providerRequestId: response.headers.get('x-request-id') || response.headers.get('x-openrouter-request-id') || 'n/a',
+      bodyPreview: clipText(firstRaw),
+    });
+
     const fallbackBody = { ...body };
     delete fallbackBody.reasoning;
     response = await sendRequest(fallbackBody);
@@ -220,33 +334,77 @@ async function createChatCompletion(
   if (!response.ok) {
     const raw = await response.text();
     const err = parseJsonSafe<{ error?: { message?: string }; message?: string }>(raw) || {};
-    throw new Error(err.error?.message || err.message || raw || `Provider returned error (${response.status})`);
+    const providerRequestId = response.headers.get('x-request-id') || response.headers.get('x-openrouter-request-id') || 'n/a';
+    debugLog(requestId, 'provider_error', {
+      status: response.status,
+      statusText: response.statusText,
+      providerRequestId,
+      bodyPreview: clipText(raw),
+    });
+    const details = `status=${response.status} statusText=${response.statusText || 'unknown'} providerRequestId=${providerRequestId}`;
+    throw new Error(
+      `${err.error?.message || err.message || clipText(raw) || 'Provider returned error'} (${details})`
+    );
   }
 
-  const raw = await response.text();
-  const parsed = parseJsonSafe<ChatCompletionApiResponse & { error?: { message?: string }; message?: string }>(raw) || {};
-  let content = normalizeDeltaText(parsed.choices?.[0]?.message?.content);
+  if (!response.body) {
+    throw new Error('No stream received from provider');
+  }
 
-  // Some Gemma responses can come back empty with reasoning enabled; retry once without reasoning.
-  if (!content.trim() && model === 'google/gemma-4-26b-a4b-it:free' && body.reasoning) {
-    const fallbackBody = { ...body };
-    delete fallbackBody.reasoning;
-    const fallbackResponse = await sendRequest(fallbackBody);
+  async function* parseStream() {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-    if (!fallbackResponse.ok) {
-      const fallbackRaw = await fallbackResponse.text();
-      const fallbackErr = parseJsonSafe<{ error?: { message?: string }; message?: string }>(fallbackRaw) || {};
-      throw new Error(
-        fallbackErr.error?.message || fallbackErr.message || fallbackRaw || `Provider returned error (${fallbackResponse.status})`
-      );
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        buffer += decoder.decode();
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+
+      while (true) {
+        const newlineIndex = buffer.indexOf('\n');
+        if (newlineIndex < 0) break;
+
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+
+        if (!line || line.startsWith(':') || line.startsWith('event:')) {
+          continue;
+        }
+
+        if (!line.startsWith('data:')) {
+          continue;
+        }
+
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') {
+          continue;
+        }
+
+        const parsed = parseJsonSafe<ChatDeltaEvent>(payload);
+        if (parsed) {
+          yield parsed;
+        }
+      }
     }
 
-    const fallbackRaw = await fallbackResponse.text();
-    const fallbackParsed = parseJsonSafe<ChatCompletionApiResponse>(fallbackRaw) || {};
-    content = normalizeDeltaText(fallbackParsed.choices?.[0]?.message?.content);
+    const tail = buffer.trim();
+    if (tail.startsWith('data:')) {
+      const payload = tail.slice(5).trim();
+      if (payload && payload !== '[DONE]') {
+        const parsed = parseJsonSafe<ChatDeltaEvent>(payload);
+        if (parsed) {
+          yield parsed;
+        }
+      }
+    }
   }
 
-  return content.trim();
+  return parseStream();
 }
 
 function normalizeDeltaText(value: unknown) {
@@ -286,6 +444,8 @@ async function extractText(fileName: string, bytes: ArrayBuffer): Promise<string
 }
 
 export const POST: RequestHandler = async ({ request }) => {
+  const requestId = Math.random().toString(36).slice(2, 10);
+  let rateLimitLease: RateLimitLease | null = null;
   try {
     const authHeader = request.headers.get('authorization');
     const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -301,15 +461,43 @@ export const POST: RequestHandler = async ({ request }) => {
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
     const filePath = typeof payload.filePath === 'string' ? payload.filePath : '';
     const requestedModel = typeof payload.model === 'string' ? payload.model : '';
-    const model = ALLOWED_MODELS.has(requestedModel)
-      ? requestedModel
-      : 'nvidia/nemotron-3-super-120b-a12b:free';
+    const model = ALLOWED_MODELS.has(requestedModel) ? requestedModel : BASIC_MODEL;
+
+    debugLog(requestId, 'request_received', {
+      userId: user.id,
+      filePath,
+      modelRequested: requestedModel,
+      modelUsed: model,
+      messageChars: message.length,
+    });
 
     if (!message) {
       return json({ error: 'Message is required' }, { status: 400 });
     }
 
+    const currentCredits = await getUserCredits(supabase, user.id);
+    if (currentCredits <= 0) {
+      return json({ error: 'Not enough credits. Please buy more credits.' }, { status: 402 });
+    }
+
+    const rateLimit = acquireChatRateLimit(user.id);
+    if (!rateLimit.allowed) {
+      return json(
+        { error: rateLimit.message },
+        {
+          status: 429,
+          headers: {
+            'Retry-After': String(rateLimit.retryAfterSeconds),
+          },
+        }
+      );
+    }
+
+    rateLimitLease = rateLimit.lease;
+
     if (!filePath || !filePath.startsWith(`${user.id}/`)) {
+      rateLimitLease.release();
+      rateLimitLease = null;
       return json({ error: 'Invalid file path' }, { status: 403 });
     }
 
@@ -321,6 +509,8 @@ export const POST: RequestHandler = async ({ request }) => {
       const { data: blob, error: downloadError } = await supabase.storage.from(bucket).download(filePath);
 
       if (downloadError || !blob) {
+        rateLimitLease.release();
+        rateLimitLease = null;
         return json({ error: downloadError?.message || 'File not found' }, { status: 404 });
       }
 
@@ -329,15 +519,15 @@ export const POST: RequestHandler = async ({ request }) => {
       setCachedFileText(filePath, fileText);
     }
 
-    const apiKey = env.OPENROUTER_API_KEY || '';
+    const apiKey = env.GITHUB_TOKEN || '';
     if (!apiKey) {
-      return json({ error: 'Missing OPENROUTER_API_KEY' }, { status: 500 });
+      rateLimitLease.release();
+      rateLimitLease = null;
+      return json({ error: 'Missing GITHUB_TOKEN' }, { status: 500 });
     }
 
-    const referer = env.OPENROUTER_SITE_URL || env.SITE_URL || 'http://localhost:5173';
-    const appTitle = env.OPENROUTER_SITE_NAME || 'Surfacer';
     const maxContextChars = 28000;
-    const promptContext = await buildPromptContext(filePath, fileText, message, apiKey, referer, appTitle, maxContextChars);
+    const promptContext = await buildPromptContext(filePath, fileText, message, apiKey, '', '', maxContextChars);
     const session = await getOrCreateChatSession(supabase, user.id, filePath, fileName);
     const priorMessages = (await listChatMessages(supabase, session.id)).slice(-MAX_CONTEXT_MESSAGES);
 
@@ -363,16 +553,146 @@ export const POST: RequestHandler = async ({ request }) => {
       },
     ];
 
-    const assistantResponse = await createChatCompletion(apiKey, referer, appTitle, model, chatMessages);
+    let assistantResponse = '';
+    let responseModel = model;
 
-    if (!assistantResponse) {
-      return json({ error: 'Model returned an empty response. Please try again.' }, { status: 502 });
+    try {
+      const encoder = new TextEncoder();
+      const stream = await createChatCompletion(apiKey, model, chatMessages, requestId);
+
+      return new Response(
+        new ReadableStream({
+          async start(controller) {
+            try {
+              const sendEvent = (type: 'content' | 'reasoning' | 'done', delta = '') => {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type, delta })}\n\n`));
+              };
+
+              controller.enqueue(encoder.encode(': stream-open\n\n'));
+
+              for await (const event of stream) {
+                const deltaNode = event?.choices?.[0]?.delta;
+                const contentDelta = normalizeDeltaText(deltaNode?.content);
+                const reasoningDelta =
+                  normalizeDeltaText(deltaNode?.reasoning) ||
+                  normalizeDeltaText(deltaNode?.reasoning_content) ||
+                  normalizeDeltaText(deltaNode?.reasoningContent);
+
+                if (reasoningDelta) {
+                  sendEvent('reasoning', reasoningDelta);
+                }
+
+                if (contentDelta) {
+                  assistantResponse += contentDelta;
+                  sendEvent('content', contentDelta);
+                }
+              }
+
+              sendEvent('done');
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+
+              if (assistantResponse.trim()) {
+                await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
+                await setUserCredits(supabase, user.id, currentCredits - 1);
+              }
+
+              debugLog(requestId, 'response_saved', { sessionId: session.id, responseModel });
+              controller.close();
+            } catch (streamErr: unknown) {
+              const streamMessage = streamErr instanceof Error ? streamErr.message : 'Streaming failed';
+              controller.error(new Error(streamMessage));
+            } finally {
+              rateLimitLease?.release();
+              rateLimitLease = null;
+            }
+          },
+        }),
+        {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          },
+        }
+      );
+    } catch (primaryErr: unknown) {
+      if (model !== PREMIUM_MODEL) {
+        rateLimitLease?.release();
+        rateLimitLease = null;
+        throw primaryErr;
+      }
+
+      const primaryMessage = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+      debugLog(requestId, 'premium_failed_fallback_to_basic', {
+        premiumError: clipText(primaryMessage),
+      });
+
+      const fallbackStream = await createChatCompletion(apiKey, BASIC_MODEL, chatMessages, requestId);
+      responseModel = BASIC_MODEL;
+
+      const encoder = new TextEncoder();
+      return new Response(
+        new ReadableStream({
+          async start(controller) {
+            try {
+              const sendEvent = (type: 'content' | 'reasoning' | 'done', delta = '') => {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type, delta })}\n\n`));
+              };
+
+              controller.enqueue(encoder.encode(': stream-open\n\n'));
+
+              for await (const event of fallbackStream) {
+                const deltaNode = event?.choices?.[0]?.delta;
+                const contentDelta = normalizeDeltaText(deltaNode?.content);
+                const reasoningDelta =
+                  normalizeDeltaText(deltaNode?.reasoning) ||
+                  normalizeDeltaText(deltaNode?.reasoning_content) ||
+                  normalizeDeltaText(deltaNode?.reasoningContent);
+
+                if (reasoningDelta) {
+                  sendEvent('reasoning', reasoningDelta);
+                }
+
+                if (contentDelta) {
+                  assistantResponse += contentDelta;
+                  sendEvent('content', contentDelta);
+                }
+              }
+
+              sendEvent('done');
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+
+              if (assistantResponse.trim()) {
+                await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
+                await setUserCredits(supabase, user.id, currentCredits - 1);
+              }
+
+              debugLog(requestId, 'response_saved', { sessionId: session.id, responseModel });
+              controller.close();
+            } catch (streamErr: unknown) {
+              const streamMessage = streamErr instanceof Error ? streamErr.message : 'Streaming failed';
+              controller.error(new Error(streamMessage));
+            } finally {
+              rateLimitLease?.release();
+              rateLimitLease = null;
+            }
+          },
+        }),
+        {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          },
+        }
+      );
     }
-
-    await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse);
-    return json({ message: assistantResponse });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unexpected chat error';
+    rateLimitLease?.release();
+    console.error(`[chat:${requestId}] request_failed`, err);
     return json({ error: message }, { status: 500 });
   }
 };

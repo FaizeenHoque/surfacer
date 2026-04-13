@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import katex from 'katex';
-  import { authStore } from '$lib/authStore';
+  import { authStore, type CreditPackOption } from '$lib/authStore';
   import { supabase } from '$lib/supabaseClient';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
@@ -16,10 +16,16 @@
   let isThinking = $state(false);
   let isLoadingChat = $state(false);
   let isUploading = $state(false);
-  let selectedModel = $state('nvidia/nemotron-3-super-120b-a12b:free');
+  let isCreatingCheckout = $state(false);
+  let isOpeningBillingPortal = $state(false);
+  let isBillingModalOpen = $state(false);
+  let selectedModel = $state('microsoft/Phi-4');
+  let reasoningVisibility = $state<'hide' | 'show'>('hide');
   let messages = $state<Message[]>([]);
   let currentUser = $state<{ id: string; email: string } | null>(null);
   let credits = $state(0);
+  let creditPacks = $state<CreditPackOption[]>([]);
+  let selectedPackId = $state<string>('');
   let activeChatId = $state<string | null>(null);
   
   let messagesEl: HTMLElement;
@@ -27,13 +33,13 @@
   let fileInputEl: HTMLInputElement;
 
   const modelOptions = [
-    { label: 'Basic', value: 'nvidia/nemotron-3-super-120b-a12b:free' },
-    { label: 'Premium', value: 'google/gemma-4-26b-a4b-it:free' },
+    { label: 'Basic', value: 'microsoft/Phi-4' },
+    { label: 'Premium', value: 'deepseek/DeepSeek-V3-0324' },
   ];
 
   type Message =
     | { id: string; type: 'system'; text: string }
-    | { id: string; type: 'ai'; content: string; timestamp: string; streaming?: boolean }
+    | { id: string; type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean }
     | { id: string; type: 'user'; content: string; timestamp: string };
 
   type StoredFile = {
@@ -68,12 +74,50 @@
           id: user.id,
           email: user.email || '',
         };
-        try {
-          const profile = await authStore.bootstrapCredits();
-          credits = profile.credits;
-        } catch (err: unknown) {
-          console.error('Failed to load credits:', err);
+        await refreshCredits();
+        await loadCreditPacks();
+
+        const billingStatus = new URLSearchParams(window.location.search).get('billing');
+        if (billingStatus === 'success') {
+          const creditsBefore = credits;
+          let creditsAfter = creditsBefore;
+          for (let attempt = 0; attempt < 6; attempt += 1) {
+            await refreshCredits();
+            creditsAfter = credits;
+            if (creditsAfter > creditsBefore) break;
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
+
+          messages = [
+            ...messages,
+            {
+              id: makeMessageId('system'),
+              type: 'system',
+              text:
+                creditsAfter > creditsBefore
+                  ? 'Payment successful. Credits updated.'
+                  : 'Payment succeeded. Credits may take a few seconds to sync from webhook.',
+            },
+          ];
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.delete('billing');
+          window.history.replaceState({}, '', nextUrl.toString());
         }
+
+        if (billingStatus === 'cancelled') {
+          messages = [...messages, { id: makeMessageId('system'), type: 'system', text: 'Payment was cancelled.' }];
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.delete('billing');
+          window.history.replaceState({}, '', nextUrl.toString());
+        }
+
+        if (billingStatus === 'portal') {
+          messages = [...messages, { id: makeMessageId('system'), type: 'system', text: 'Returned from billing portal.' }];
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.delete('billing');
+          window.history.replaceState({}, '', nextUrl.toString());
+        }
+
         await loadFiles();
       } else {
         goto('/auth');
@@ -88,6 +132,52 @@
   });
 
   // ── Helpers ────────────────────────────────────────────────────────────────
+  async function refreshCredits() {
+    try {
+      const profile = await authStore.bootstrapCredits();
+      credits = profile.credits;
+    } catch (err: unknown) {
+      console.error('Failed to load credits:', err);
+    }
+  }
+
+  function formatPrice(pack: CreditPackOption) {
+    if (!pack.priceCents || !pack.currency) return 'Price shown at checkout';
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency: pack.currency,
+      }).format(pack.priceCents / 100);
+    } catch {
+      return `${(pack.priceCents / 100).toFixed(2)} ${pack.currency}`;
+    }
+  }
+
+  function formatInterval(pack: CreditPackOption) {
+    if (pack.interval === 'month') return '/month';
+    if (pack.interval === 'year') return '/year';
+    return '';
+  }
+
+  function selectedPack() {
+    return creditPacks.find((pack) => pack.id === selectedPackId) || null;
+  }
+
+  async function loadCreditPacks() {
+    try {
+      const packs = await authStore.getCreditPacks();
+      creditPacks = packs.filter((pack) => pack.credits > 0);
+      if (!selectedPackId && creditPacks.length > 0) {
+        selectedPackId = creditPacks[0].id;
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to load credit packs';
+      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];
+      creditPacks = [];
+      selectedPackId = '';
+    }
+  }
+
   function escapeHtml(text: string) {
     return text
       .replace(/&/g, '&amp;')
@@ -559,18 +649,23 @@
     }
 
     promptValue = '';
-    if (textareaEl) { textareaEl.style.height = 'auto'; }
+    if (textareaEl) {
+      textareaEl.style.height = 'auto';
+    }
 
     const now = formatTimestamp(new Date().toISOString());
     messages = [...messages, { id: makeMessageId('user'), type: 'user', content: text, timestamp: now }];
     const aiIndex = messages.length;
-    messages = [...messages, { id: makeMessageId('ai'), type: 'ai', content: '', timestamp: now, streaming: true }];
+    messages = [...messages, { id: makeMessageId('ai'), type: 'ai', content: '', reasoning: '', timestamp: now, streaming: true }];
     isThinking = true;
     scrollToBottom();
 
     try {
       const token = await getAccessToken();
       if (!token) throw new Error('Session expired');
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90_000);
 
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
@@ -584,7 +679,8 @@
           chatId: activeChatId,
           model: selectedModel,
         }),
-      });
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
 
       if (!response.ok) {
         const raw = await response.text();
@@ -600,24 +696,137 @@
         throw new Error(message);
       }
 
-      const payload = (await response.json()) as { message?: string; error?: string };
-      const content = (payload.message || '').trim();
-      if (!content) {
-        throw new Error(payload.error || 'Model returned an empty response. Please try again.');
+      if (!response.body) {
+        throw new Error('No stream received from server');
       }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let content = '';
+      let reasoning = '';
+      let streamBuffer = '';
+      let eventDataLines: string[] = [];
+      let pendingRender = false;
+
+      const applyAiUpdate = (force = false) => {
+        if (!force && pendingRender) return;
+        pendingRender = true;
+
+        const render = () => {
+          pendingRender = false;
+          const wasNearBottom = isNearBottom();
+          const next = [...messages];
+          const target = next[aiIndex];
+          if (target && target.type === 'ai') {
+            next[aiIndex] = { ...target, content, reasoning, streaming: true };
+            messages = next;
+          }
+          if (wasNearBottom) {
+            scrollToBottom();
+          }
+        };
+
+        if (force) {
+          render();
+          return;
+        }
+
+        requestAnimationFrame(render);
+      };
+
+      const handlePayload = (payloadLine: string) => {
+        if (!payloadLine || payloadLine === '[DONE]') return;
+
+        try {
+          const payload = JSON.parse(payloadLine) as { type?: string; delta?: string };
+          if (payload.type === 'reasoning' && payload.delta) {
+            reasoning += payload.delta;
+            applyAiUpdate();
+            return;
+          }
+
+          if (payload.type === 'content' && payload.delta) {
+            content += payload.delta;
+            applyAiUpdate();
+            return;
+          }
+        } catch {
+          content += payloadLine;
+          applyAiUpdate();
+        }
+      };
+
+      const flushSseEvent = () => {
+        if (!eventDataLines.length) return;
+        const payloadLine = eventDataLines.join('\n').trim();
+        eventDataLines = [];
+        handlePayload(payloadLine);
+      };
+
+      const processSseChunk = (chunk: string) => {
+        streamBuffer += chunk;
+
+        while (true) {
+          const match = streamBuffer.match(/\r\n|\n|\r/);
+          if (!match || match.index === undefined) break;
+
+          const lineEnd = match.index;
+          const line = streamBuffer.slice(0, lineEnd);
+          streamBuffer = streamBuffer.slice(lineEnd + match[0].length);
+
+          if (!line) {
+            flushSseEvent();
+            continue;
+          }
+
+          if (line.startsWith(':') || line.startsWith('event:')) {
+            continue;
+          }
+
+          if (line.startsWith('data:')) {
+            eventDataLines.push(line.slice(5).trimStart());
+          } else {
+            eventDataLines.push(line);
+          }
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        processSseChunk(decoder.decode(value, { stream: true }));
+      }
+
+      processSseChunk(decoder.decode());
+      if (streamBuffer.trim()) {
+        eventDataLines.push(streamBuffer.trim());
+        streamBuffer = '';
+      }
+      flushSseEvent();
+
+      applyAiUpdate(true);
 
       const next = [...messages];
       const target = next[aiIndex];
       if (target && target.type === 'ai') {
-        next[aiIndex] = { ...target, content, streaming: false };
+        next[aiIndex] = { ...target, content, reasoning, streaming: false };
         messages = next;
       }
+
+      if (content.trim()) {
+        credits = Math.max(0, credits - 1);
+      }
     } catch (err: unknown) {
-      const errorText = err instanceof Error ? err.message : 'Chat failed';
+      const errorText = err instanceof DOMException && err.name === 'AbortError'
+        ? 'Request timed out. Please try again.'
+        : err instanceof Error
+          ? err.message
+          : 'Chat failed';
       const next = [...messages];
       const target = next[aiIndex];
       if (target && target.type === 'ai') {
-        next[aiIndex] = { ...target, content: errorText, streaming: false };
+        next[aiIndex] = { ...target, content: errorText, reasoning: '', streaming: false };
         messages = next;
       }
     } finally {
@@ -644,6 +853,52 @@
       goto('/auth');
     } catch (err: unknown) {
       console.error('Logout failed:', err);
+    }
+  }
+
+  function openBillingModal() {
+    if (!selectedPackId && creditPacks.length > 0) {
+      selectedPackId = creditPacks[0].id;
+    }
+    isBillingModalOpen = true;
+  }
+
+  function closeBillingModal() {
+    if (isCreatingCheckout) return;
+    isBillingModalOpen = false;
+  }
+
+  async function handleBuyCredits() {
+    if (isCreatingCheckout) return;
+    if (!selectedPackId) {
+      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: 'No credit pack is configured yet.' }];
+      return;
+    }
+
+    try {
+      isCreatingCheckout = true;
+      const session = await authStore.createCreditsCheckout(selectedPackId);
+      window.location.href = session.checkoutUrl;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to open checkout';
+      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];
+    } finally {
+      isCreatingCheckout = false;
+    }
+  }
+
+  async function handleManageSubscription() {
+    if (isOpeningBillingPortal) return;
+
+    try {
+      isOpeningBillingPortal = true;
+      const session = await authStore.createBillingPortalSession();
+      window.location.href = session.url;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to open billing portal';
+      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];
+    } finally {
+      isOpeningBillingPortal = false;
     }
   }
 
@@ -783,8 +1038,14 @@
           <span class="text-[10px] font-mono font-medium" style="color:#00e5a0">{credits}</span>
         </div>
       </div>
-      <button class="w-full py-2 rounded-lg text-xs font-mono font-medium transition-all duration-200" style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0">
-        + Buy credits
+
+      <button
+        onclick={openBillingModal}
+        disabled={isCreatingCheckout || creditPacks.length === 0}
+        class="w-full py-2 rounded-lg text-xs font-mono font-medium transition-all duration-200"
+        style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
+      >
+        {creditPacks.length === 0 ? 'No plans configured' : '+ Buy credits'}
       </button>
       <!-- User -->
       {#if currentUser}
@@ -845,6 +1106,15 @@
               <option value={model.value}>{model.label}</option>
             {/each}
           </select>
+
+          <select
+            bind:value={reasoningVisibility}
+            class="model-select desktop-only px-3 py-1.5 rounded-lg text-xs font-mono"
+            style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
+          >
+            <option value="hide">Reasoning: hidden</option>
+            <option value="show">Reasoning: shown</option>
+          </select>
         </div>
         {#each [
           { title: 'Share', path: 'M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z' },
@@ -887,11 +1157,19 @@
                 <span class="text-xs font-semibold" style="color:#00e5a0">Surfacer</span>
                 <span class="text-[10px] font-mono" style="color:#4a4a5e">{msg.timestamp} · 1 credit used</span>
               </div>
+              {#if msg.reasoning?.trim()}
+                <details class="ai-reasoning-box mb-2" open={reasoningVisibility === 'show'}>
+                  <summary class="ai-reasoning-summary">Reasoning trace</summary>
+                  <div class="ai-reasoning text-xs leading-relaxed mt-1.5">
+                    {@html renderMarkdown(msg.reasoning || '')}
+                  </div>
+                </details>
+              {/if}
               <div class="ai-content text-sm leading-relaxed" style="color:rgba(255,255,255,0.8)">
-                {#if msg.streaming}
+                {#if msg.streaming && !msg.content.trim()}
                   <span class="generation-dots" aria-label="Generating response"><span></span><span></span><span></span></span>
                 {/if}
-                {@html renderMarkdown(msg.content)}
+                {@html renderMarkdown(msg.content)}{#if msg.streaming && msg.content.trim()}<span class="typing-cursor"></span>{/if}
               </div>
               {#if !msg.streaming}
                 <div class="flex items-center gap-2 mt-2.5">
@@ -969,6 +1247,71 @@
       </p>
     </div>
   </main>
+
+  {#if isBillingModalOpen}
+    <button class="fixed inset-0 z-40" style="background:rgba(5,7,10,0.68)" onclick={closeBillingModal} aria-label="Close billing modal"></button>
+    <div class="fixed inset-0 z-50 grid place-items-center px-4" aria-label="Choose monthly credit plan" role="dialog" aria-modal="true">
+      <div class="w-full max-w-3xl rounded-2xl p-5" style="background:#101218; border:1px solid #ffffff1a">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="text-lg font-semibold" style="color:#f0f2f8">Choose a monthly plan</h2>
+            <p class="text-xs font-mono" style="color:#8b90a5">Credits are added on each successful monthly payment.</p>
+          </div>
+          <button class="p-2 rounded-md" style="color:#8b90a5; border:1px solid #ffffff1a" onclick={closeBillingModal} disabled={isCreatingCheckout} aria-label="Close plans modal">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="grid gap-3 md:grid-cols-3">
+          {#each creditPacks as pack (pack.id)}
+            <button
+              class="text-left rounded-xl p-4 transition-all"
+              style="background:{selectedPackId === pack.id ? '#00e5a012' : '#0b0d13'}; border:1px solid {selectedPackId === pack.id ? '#00e5a054' : '#ffffff1a'}"
+              onclick={() => {
+                selectedPackId = pack.id;
+              }}
+            >
+              <p class="text-xs font-mono uppercase tracking-wider" style="color:#9aa0b7">{pack.label}</p>
+              <p class="text-2xl font-semibold mt-1" style="color:#f5f7ff">{pack.credits}</p>
+              <p class="text-xs font-mono" style="color:#9aa0b7">credits{pack.interval === 'month' ? ' per month' : pack.interval === 'year' ? ' per year' : ''}</p>
+              <p class="text-sm font-semibold mt-4" style="color:#00e5a0">{formatPrice(pack)}{formatInterval(pack)}</p>
+            </button>
+          {/each}
+        </div>
+
+        <div class="mt-5 flex items-center justify-between gap-3">
+          <p class="text-xs font-mono" style="color:#8b90a5">
+            {#if selectedPack()}
+              Selected: {selectedPack()?.credits} credits {selectedPack()?.interval === 'month' ? 'per month' : selectedPack()?.interval === 'year' ? 'per year' : 'one time'}
+            {:else}
+              Select a plan to continue
+            {/if}
+          </p>
+          <button
+            onclick={handleBuyCredits}
+            disabled={!selectedPackId || isCreatingCheckout}
+            class="px-4 py-2 rounded-lg text-sm font-mono font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
+          >
+            {isCreatingCheckout ? 'Opening checkout...' : 'Continue to checkout'}
+          </button>
+        </div>
+
+        <div class="mt-3 flex justify-end">
+          <button
+            onclick={handleManageSubscription}
+            disabled={isOpeningBillingPortal}
+            class="px-3 py-1.5 rounded-md text-xs font-mono transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            style="background:#ffffff08; border:1px solid #ffffff1a; color:#c7ccdf"
+          >
+            {isOpeningBillingPortal ? 'Opening portal...' : 'Manage subscription / cancel'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -1018,6 +1361,37 @@
 
   .generation-dots span:nth-child(3) {
     animation-delay: 0.32s;
+  }
+
+  :global(.typing-cursor) {
+    display: inline-block;
+    width: 2px;
+    height: 0.9em;
+    background: #00e5a0;
+    margin-left: 1px;
+    vertical-align: middle;
+    animation: blink 1s step-end infinite;
+  }
+
+  .ai-reasoning-box {
+    border: 1px solid #ffffff12;
+    border-radius: 10px;
+    background: #101018;
+    padding: 0.5rem 0.65rem;
+  }
+
+  .ai-reasoning-summary {
+    cursor: pointer;
+    color: #8f92a8;
+    font-size: 0.7rem;
+    font-family: 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    user-select: none;
+  }
+
+  .ai-reasoning {
+    color: #a5a9c3;
   }
 
   /* Message animation */
@@ -1147,6 +1521,11 @@
   @keyframes fadeUp {
     0%   { opacity: 0; transform: translateY(8px); }
     100% { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
   }
 
   @keyframes pulseDot {

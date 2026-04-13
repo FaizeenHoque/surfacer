@@ -62,21 +62,6 @@ function createAuthStore() {
       if (error) throw error;
       return data;
     },
-    updateEmail: async (newEmail: string) => {
-      const { data, error } = await supabase.auth.updateUser({
-        email: newEmail,
-      });
-      if (error) throw error;
-      if (data.user) {
-        set({
-          id: data.user.id,
-          email: data.user.email || '',
-          email_confirmed_at: data.user.email_confirmed_at,
-          user_metadata: data.user.user_metadata,
-        });
-      }
-      return data;
-    },
     checkUser: async () => {
       const {
         data: { user },
@@ -92,6 +77,29 @@ function createAuthStore() {
         set(null);
       }
       return user;
+    },
+    bootstrapCredits: async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error('No active session');
+      }
+
+      const response = await fetch('/api/account/bootstrap', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to bootstrap credits');
+      }
+
+      return payload as { credits: number; isNewUser: boolean };
     },
   };
 }

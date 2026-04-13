@@ -1,0 +1,129 @@
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_KEY } from '$env/static/public';
+
+export type ChatRole = 'system' | 'user' | 'assistant';
+
+export type ChatSessionRow = {
+  id: string;
+  user_id: string;
+  file_path: string;
+  file_name: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChatMessageRow = {
+  id: string;
+  chat_id: string;
+  user_id: string;
+  role: ChatRole;
+  content: string;
+  created_at: string;
+};
+
+export function createAuthedSupabase(token: string) {
+  return createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
+    global: {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  });
+}
+
+export async function getUserFromToken(supabase: SupabaseClient, token: string) {
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser(token);
+
+  if (error || !user) {
+    throw new Error('Invalid auth token');
+  }
+
+  return user;
+}
+
+export function fileNameFromPath(filePath: string) {
+  return filePath.split('/').pop() || 'document';
+}
+
+export async function getOrCreateChatSession(
+  supabase: SupabaseClient,
+  userId: string,
+  filePath: string,
+  fileName: string
+) {
+  const { data: existing, error: lookupError } = await supabase
+    .from('chat_sessions')
+    .select('id, user_id, file_path, file_name, title, created_at, updated_at')
+    .eq('user_id', userId)
+    .eq('file_path', filePath)
+    .maybeSingle();
+
+  if (lookupError) {
+    throw lookupError;
+  }
+
+  if (existing) {
+    return existing as ChatSessionRow;
+  }
+
+  const { data, error } = await supabase
+    .from('chat_sessions')
+    .insert({
+      user_id: userId,
+      file_path: filePath,
+      file_name: fileName,
+      title: fileName,
+    })
+    .select('id, user_id, file_path, file_name, title, created_at, updated_at')
+    .single();
+
+  if (error || !data) {
+    throw error || new Error('Failed to create chat session');
+  }
+
+  return data as ChatSessionRow;
+}
+
+export async function listChatMessages(supabase: SupabaseClient, chatId: string) {
+  const { data, error } = await supabase
+    .from('chat_messages')
+    .select('id, chat_id, user_id, role, content, created_at')
+    .eq('chat_id', chatId)
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data || []) as ChatMessageRow[];
+}
+
+export async function appendChatMessage(
+  supabase: SupabaseClient,
+  chatId: string,
+  userId: string,
+  role: ChatRole,
+  content: string
+) {
+  const { data, error } = await supabase
+    .from('chat_messages')
+    .insert({
+      chat_id: chatId,
+      user_id: userId,
+      role,
+      content,
+    })
+    .select('id, chat_id, user_id, role, content, created_at')
+    .single();
+
+  if (error || !data) {
+    throw error || new Error('Failed to save chat message');
+  }
+
+  return data as ChatMessageRow;
+}

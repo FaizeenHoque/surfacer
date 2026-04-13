@@ -20,8 +20,8 @@
           message = 'Email confirmed! Redirecting...';
           setTimeout(() => window.location.href = '/', 2000);
         } else {
-          message = 'Email verified successfully!';
-          setTimeout(() => window.location.href = '/auth', 2000);
+          message = 'Email verified successfully! Redirecting...';
+          setTimeout(() => window.location.href = '/', 2000);
         }
       }
     } catch (err: unknown) {

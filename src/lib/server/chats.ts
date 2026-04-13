@@ -143,11 +143,20 @@ export async function getUserCredits(supabase: SupabaseClient, userId: string) {
     return 0;
   }
 
-  return typeof data.credits === 'number' ? data.credits : 0;
+  if (typeof data.credits === 'number') {
+    return data.credits;
+  }
+
+  if (typeof data.credits === 'string') {
+    const parsed = Number(data.credits);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  return 0;
 }
 
 export async function setUserCredits(supabase: SupabaseClient, userId: string, credits: number) {
-  const nextCredits = Math.max(0, Math.floor(credits));
+  const nextCredits = Math.max(0, Number(credits.toFixed(2)));
   const { error } = await supabase
     .from('profiles')
     .update({ credits: nextCredits })

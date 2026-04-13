@@ -60,7 +60,12 @@ export const POST: RequestHandler = async ({ request }) => {
       return json({ credits: 35, isNewUser: true });
     }
 
-    const credits = typeof existingProfile.data.credits === 'number' ? existingProfile.data.credits : 0;
+    const rawCredits = existingProfile.data.credits;
+    const credits = typeof rawCredits === 'number'
+      ? rawCredits
+      : typeof rawCredits === 'string'
+        ? Number(rawCredits) || 0
+        : 0;
     return json({ credits, isNewUser: false });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unexpected server error';

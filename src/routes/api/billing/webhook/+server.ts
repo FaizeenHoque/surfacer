@@ -111,7 +111,12 @@ async function addCreditsToUser(userId: string, creditsToAdd: number) {
     throw new Error(profileLookup.error?.message || 'Profile not found for webhook credit grant');
   }
 
-  const currentCredits = typeof profileLookup.data.credits === 'number' ? profileLookup.data.credits : 0;
+  const rawCredits = profileLookup.data.credits;
+  const currentCredits = typeof rawCredits === 'number'
+    ? rawCredits
+    : typeof rawCredits === 'string'
+      ? Number(rawCredits) || 0
+      : 0;
   const nextCredits = currentCredits + creditsToAdd;
 
   const updateResult = await supabase

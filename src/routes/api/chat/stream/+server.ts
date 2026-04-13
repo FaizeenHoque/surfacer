@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { PDFParse } from 'pdf-parse';
+import JSZip from 'jszip';
 import { env } from '$env/dynamic/private';
 import {
   appendChatMessage,
@@ -17,7 +18,7 @@ const ALLOWED_MODELS = new Set([
   'microsoft/Phi-4',
   'deepseek/DeepSeek-V3-0324',
 ]);
-const FILE_TEXT_CACHE = new Map<string, { text: string; updatedAt: number }>();
+const FILE_TEXT_CACHE = new Map<string, { text: string; pageCount: number; updatedAt: number }>();
 const FILE_EMBEDDINGS_CACHE = new Map<string, { chunks: string[]; vectors: number[][]; updatedAt: number }>();
 const MAX_CACHE_ENTRIES = 20;
 const MAX_CONTEXT_MESSAGES = 16;
@@ -32,29 +33,21 @@ const CHAT_BURST_WINDOW_MS = 15_000;
 const CHAT_BURST_LIMIT = 3;
 const BASIC_MODEL_MULTIPLIER = 1;
 const PREMIUM_MODEL_MULTIPLIER = 10;
+const CREDIT_BASE_COST = 2;
+const CREDIT_PAGE_COST = 0.2;
 const DEFAULT_CHARS_PER_PAGE = 3000;
 
-function toPositiveInt(value: string | undefined, fallback: number) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.floor(parsed);
+type ExtractedDocument = {
+  text: string;
+  pageCount: number;
+};
+
+function estimatePageCountFromText(fileText: string) {
+  return Math.max(1, Math.ceil(fileText.length / DEFAULT_CHARS_PER_PAGE));
 }
 
-function getCreditBaseCost() {
-  return toPositiveInt(env.CHAT_CREDIT_BASE, 1);
-}
-
-function getCreditPageCost() {
-  return toPositiveInt(env.CHAT_CREDIT_PAGE_COST, 1);
-}
-
-function getCharsPerPage() {
-  return toPositiveInt(env.CHAT_CREDIT_CHARS_PER_PAGE, DEFAULT_CHARS_PER_PAGE);
-}
-
-function estimatePageCount(fileText: string) {
-  const charsPerPage = getCharsPerPage();
-  return Math.max(1, Math.ceil(fileText.length / charsPerPage));
+function estimatePageCountFromBytes(byteLength: number) {
+  return Math.max(1, Math.ceil(byteLength / DEFAULT_CHARS_PER_PAGE));
 }
 
 function getModelMultiplier(model: string) {
@@ -62,10 +55,10 @@ function getModelMultiplier(model: string) {
 }
 
 function calculateCreditCost(pageCount: number, model: string) {
-  const base = getCreditBaseCost();
-  const pageCost = getCreditPageCost();
+  const base = CREDIT_BASE_COST;
+  const pageCost = CREDIT_PAGE_COST;
   const multiplier = getModelMultiplier(model);
-  return base + (pageCount * pageCost) * multiplier;
+  return Number((base + (pageCount * pageCost) * multiplier).toFixed(2));
 }
 
 type RateLimitState = {
@@ -185,11 +178,11 @@ function acquireChatRateLimit(userId: string):
 }
 
 function getCachedFileText(filePath: string) {
-  return FILE_TEXT_CACHE.get(filePath)?.text || null;
+  return FILE_TEXT_CACHE.get(filePath) || null;
 }
 
-function setCachedFileText(filePath: string, text: string) {
-  FILE_TEXT_CACHE.set(filePath, { text, updatedAt: Date.now() });
+function setCachedFileText(filePath: string, text: string, pageCount: number) {
+  FILE_TEXT_CACHE.set(filePath, { text, pageCount, updatedAt: Date.now() });
   if (FILE_TEXT_CACHE.size <= MAX_CACHE_ENTRIES) return;
 
   const entries = [...FILE_TEXT_CACHE.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt);
@@ -459,25 +452,70 @@ function normalizeDeltaText(value: unknown) {
     .join('');
 }
 
-async function extractText(fileName: string, bytes: ArrayBuffer): Promise<string> {
+async function extractDocx(fileBytes: Buffer): Promise<ExtractedDocument> {
+  const zip = await JSZip.loadAsync(fileBytes);
+  const appXml = await zip.file('docProps/app.xml')?.async('text');
+  const documentXml = await zip.file('word/document.xml')?.async('text');
+
+  const metadataPages = Number(appXml?.match(/<Pages>(\d+)<\/Pages>/i)?.[1] || 0);
+  const manualBreaks = (documentXml?.match(/<w:br\b[^>]*\bw:type=(['"])page\1[^>]*\/?>/g) || []).length;
+  const renderedBreaks = (documentXml?.match(/<w:lastRenderedPageBreak\b[^>]*\/?>/g) || []).length;
+  const inferredBreakPages = manualBreaks + renderedBreaks > 0 ? manualBreaks + renderedBreaks + 1 : 0;
+
+  const text = (documentXml || '')
+    .replace(/<w:p\b[^>]*>/g, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const estimatedPages = estimatePageCountFromText(text);
+  const pageCount = Math.max(1, metadataPages || inferredBreakPages || estimatedPages);
+
+  return {
+    text: text || 'No readable text could be extracted from this DOCX.',
+    pageCount,
+  };
+}
+
+async function extractText(fileName: string, bytes: ArrayBuffer): Promise<ExtractedDocument> {
   const ext = fileName.split('.').pop()?.toLowerCase() || '';
   const textExtensions = new Set(['txt', 'md', 'csv', 'json', 'log', 'xml', 'html']);
+  const fileBytes = Buffer.from(bytes);
 
   if (ext === 'pdf') {
-    const parser = new PDFParse({ data: Buffer.from(bytes) });
+    const parser = new PDFParse({ data: fileBytes });
     try {
+      const info = await parser.getInfo().catch(() => null);
       const parsed = await parser.getText();
-      return parsed.text || 'No readable text could be extracted from this PDF.';
+      const totalPages = typeof info?.total === 'number' && info.total > 0
+        ? info.total
+        : estimatePageCountFromText(parsed.text || '');
+
+      return {
+        text: parsed.text || 'No readable text could be extracted from this PDF.',
+        pageCount: Math.max(1, Math.floor(totalPages)),
+      };
     } finally {
       await parser.destroy();
     }
   }
 
-  if (!textExtensions.has(ext)) {
-    return 'The uploaded file is binary or unsupported for direct parsing. Ask questions based on metadata or upload a text-based file.';
+  if (ext === 'docx') {
+    return extractDocx(fileBytes);
   }
 
-  return new TextDecoder().decode(bytes);
+  if (!textExtensions.has(ext)) {
+    return {
+      text: 'The uploaded file is binary or unsupported for direct parsing. Ask questions based on metadata or upload a text-based file.',
+      pageCount: estimatePageCountFromBytes(fileBytes.byteLength),
+    };
+  }
+
+  const text = new TextDecoder().decode(bytes);
+  return {
+    text,
+    pageCount: estimatePageCountFromText(text),
+  };
 }
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -534,7 +572,9 @@ export const POST: RequestHandler = async ({ request }) => {
     }
 
     const fileName = fileNameFromPath(filePath);
-    let fileText = getCachedFileText(filePath);
+    let cachedFile = getCachedFileText(filePath);
+    let fileText = cachedFile?.text || null;
+    let pageCount = cachedFile?.pageCount || 0;
 
     if (!fileText) {
       const bucket = env.SUPABASE_STORAGE_BUCKET || 'documents';
@@ -547,11 +587,16 @@ export const POST: RequestHandler = async ({ request }) => {
       }
 
       const fileBytes = await blob.arrayBuffer();
-      fileText = await extractText(fileName, fileBytes);
-      setCachedFileText(filePath, fileText);
+      const extracted = await extractText(fileName, fileBytes);
+      fileText = extracted.text;
+      pageCount = extracted.pageCount;
+      setCachedFileText(filePath, fileText, pageCount);
     }
 
-    const pageCount = estimatePageCount(fileText);
+    if (pageCount <= 0) {
+      pageCount = estimatePageCountFromText(fileText || '');
+    }
+
     const estimatedCost = calculateCreditCost(pageCount, model);
     const currentCredits = await getUserCredits(supabase, user.id);
 

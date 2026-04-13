@@ -1250,10 +1250,10 @@
         </div>
       {/if}
 
-      <div class="mt-4 mb-2">
+      <div class="mt-4 mb-1.5">
         <p class="text-[9px] font-mono tracking-[2px] uppercase px-1" style="color:#4a4a5e">Extraction History (30d)</p>
       </div>
-      <div class="px-1 mb-2">
+      <div class="px-1 mb-1.5">
         <div class="flex items-center gap-2 px-2.5 py-2 rounded-lg" style="background:#18181e; border:1px solid #ffffff0d">
           <svg class="w-3 h-3 shrink-0" style="color:#4a4a5e" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
@@ -1276,33 +1276,35 @@
       {:else if extractionHistory.length === 0}
         <div class="px-3 py-3 text-[10px] font-mono" style="color:#4a4a5e">No extractions found in the last 30 days.</div>
       {:else}
-        <div class="flex flex-col gap-2 px-1">
-          {#each extractionHistory as extraction (extraction.id)}
-            <div class="rounded-lg p-2.5" style="background:#111116; border:1px solid #ffffff0d">
-              <div class="flex items-center justify-between gap-2 mb-1.5">
-                <p class="text-[11px] font-medium truncate" style="color:rgba(255,255,255,0.85)">{extraction.file_name}</p>
-                <span class="text-[9px] font-mono shrink-0" style="color:#4a4a5e">{formatRelativeTime(extraction.created_at)}</span>
+        <div class="extraction-history-scroll px-1 pb-1">
+          <div class="flex flex-col gap-1.5">
+            {#each extractionHistory as extraction (extraction.id)}
+              <div class="rounded-lg p-2" style="background:#111116; border:1px solid #ffffff0d">
+                <div class="flex items-center justify-between gap-2 mb-1">
+                  <p class="text-[10px] font-semibold truncate" style="color:rgba(255,255,255,0.85)">{extraction.file_name}</p>
+                  <span class="text-[8px] font-mono shrink-0" style="color:#4a4a5e">{formatRelativeTime(extraction.created_at)}</span>
+                </div>
+                <p class="text-[9px] leading-snug mb-0.5" style="color:#8b90a5">P: {shorten(extraction.prompt, 62)}</p>
+                <p class="text-[9px] leading-snug mb-1.5" style="color:#4a4a5e">R: {shorten(extraction.result, 68)}</p>
+                <div class="flex items-center gap-1.5">
+                  <button
+                    class="px-2 py-0.5 rounded text-[8px] font-mono transition-all"
+                    style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
+                    onclick={() => void openExtractionDocument(extraction, false)}
+                  >
+                    Open
+                  </button>
+                  <button
+                    class="px-2 py-0.5 rounded text-[8px] font-mono transition-all"
+                    style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
+                    onclick={() => void openExtractionDocument(extraction, true)}
+                  >
+                    Re-run
+                  </button>
+                </div>
               </div>
-              <p class="text-[10px] leading-snug mb-1" style="color:#8b90a5">Prompt: {shorten(extraction.prompt, 92)}</p>
-              <p class="text-[10px] leading-snug mb-2" style="color:#4a4a5e">Result: {shorten(extraction.result, 98)}</p>
-              <div class="flex items-center gap-2">
-                <button
-                  class="px-2 py-1 rounded text-[9px] font-mono transition-all"
-                  style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
-                  onclick={() => void openExtractionDocument(extraction, false)}
-                >
-                  Open doc
-                </button>
-                <button
-                  class="px-2 py-1 rounded text-[9px] font-mono transition-all"
-                  style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
-                  onclick={() => void openExtractionDocument(extraction, true)}
-                >
-                  Re-run prompt
-                </button>
-              </div>
+            {/each}
             </div>
-          {/each}
         </div>
       {/if}
 
@@ -1769,6 +1771,12 @@
   .chip:hover { border-color: #00e5a026 !important; color: #00e5a0 !important; background: #00e5a014 !important; }
   .action-btn:hover { color: white !important; background: #18181e !important; border-color: #ffffff0d !important; }
   .input-box:focus-within { border-color: #ffffff16 !important; }
+
+  .extraction-history-scroll {
+    max-height: 260px;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
 
   .follow-up-skeleton {
     height: 2.55rem;

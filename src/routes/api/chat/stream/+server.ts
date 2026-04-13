@@ -11,7 +11,10 @@ import {
   listChatMessages,
 } from '$lib/server/chats';
 
-const ALLOWED_MODELS = new Set(['nvidia/nemotron-3-super-120b-a12b:free']);
+const ALLOWED_MODELS = new Set([
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'google/gemma-4-31b-it:free',
+]);
 const FILE_TEXT_CACHE = new Map<string, { text: string; updatedAt: number }>();
 const FILE_EMBEDDINGS_CACHE = new Map<string, { chunks: string[]; vectors: number[][]; updatedAt: number }>();
 const MAX_CACHE_ENTRIES = 20;
@@ -207,7 +210,10 @@ async function* streamChatCompletions(
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      buffer += decoder.decode();
+      break;
+    }
 
     buffer += decoder.decode(value, { stream: true });
     let newlineIndex = buffer.indexOf('\n');
@@ -230,6 +236,19 @@ async function* streamChatCompletions(
       }
 
       newlineIndex = buffer.indexOf('\n');
+    }
+  }
+
+  // Parse any trailing, non-newline-terminated SSE line.
+  const tail = buffer.trim();
+  if (tail.startsWith('data:')) {
+    const payload = tail.slice(5).trim();
+    if (payload && payload !== '[DONE]') {
+      try {
+        yield JSON.parse(payload) as ChatDeltaEvent;
+      } catch {
+        // Ignore malformed tail payloads.
+      }
     }
   }
 }
@@ -332,7 +351,7 @@ export const POST: RequestHandler = async ({ request }) => {
       {
         role: 'system',
         content:
-          'You are Surfacer, a file analysis assistant. Answer only from the provided file context and the chat history. Format your response in clean Markdown with short headings, bullet lists, numbered steps when helpful, and Markdown tables when comparing facts. Use LaTeX math blocks for equations. Do not output raw JSON. If data is missing, say so clearly.',
+          'You are Surfacer, a strict document-grounded assistant. Answer only using the provided file excerpts and chat history. If the user asks anything not supported by that context, reply exactly: "I cannot answer that from this document." Never use outside knowledge, never guess, and do not invent facts. Keep responses in clean Markdown with short headings, bullet points, and tables when useful. Use LaTeX for math. Do not output raw JSON.',
       },
       {
         role: 'user',

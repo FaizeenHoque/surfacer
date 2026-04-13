@@ -27,7 +27,10 @@
   let textareaEl: HTMLTextAreaElement;
   let fileInputEl: HTMLInputElement;
 
-  const modelOptions = [{ label: 'Basic', value: 'nvidia/nemotron-3-super-120b-a12b:free' }];
+  const modelOptions = [
+    { label: 'Basic', value: 'nvidia/nemotron-3-super-120b-a12b:free' },
+    { label: 'Premium', value: 'google/gemma-4-31b-it:free' },
+  ];
 
   type Message =
     | { id: string; type: 'system'; text: string }
@@ -621,11 +624,7 @@
         requestAnimationFrame(render);
       };
 
-      const handleEventLine = (line: string) => {
-        const raw = line.trim();
-        if (!raw || raw.startsWith('event:')) return;
-
-        const payloadLine = raw.startsWith('data:') ? raw.slice(5).trim() : raw;
+      const handlePayload = (payloadLine: string) => {
         if (!payloadLine || payloadLine === '[DONE]') return;
 
         try {
@@ -641,13 +640,24 @@
             applyAiUpdate();
             return;
           }
-
-          if (payload.type === 'done') {
-            return;
-          }
         } catch {
           content += payloadLine;
           applyAiUpdate();
+        }
+      };
+
+      const handleSseEvent = (eventBlock: string) => {
+        if (!eventBlock.trim()) return;
+
+        const lines = eventBlock.split('\n');
+        for (const line of lines) {
+          const raw = line.trim();
+          if (!raw || raw.startsWith('event:') || raw.startsWith(':')) continue;
+          if (raw.startsWith('data:')) {
+            handlePayload(raw.slice(5).trim());
+          } else {
+            handlePayload(raw);
+          }
         }
       };
 
@@ -657,18 +667,18 @@
 
         streamBuffer += decoder.decode(value, { stream: true });
 
-        let splitAt = streamBuffer.indexOf('\n');
+        let splitAt = streamBuffer.indexOf('\n\n');
         while (splitAt >= 0) {
-          const line = streamBuffer.slice(0, splitAt);
-          streamBuffer = streamBuffer.slice(splitAt + 1);
-          handleEventLine(line);
-          splitAt = streamBuffer.indexOf('\n');
+          const eventBlock = streamBuffer.slice(0, splitAt);
+          streamBuffer = streamBuffer.slice(splitAt + 2);
+          handleSseEvent(eventBlock);
+          splitAt = streamBuffer.indexOf('\n\n');
         }
       }
 
       streamBuffer += decoder.decode();
       if (streamBuffer.trim()) {
-        handleEventLine(streamBuffer.trim());
+        handleSseEvent(streamBuffer.trim());
       }
 
       applyAiUpdate(true);

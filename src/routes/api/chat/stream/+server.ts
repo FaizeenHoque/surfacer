@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { PDFParse } from 'pdf-parse';
 import JSZip from 'jszip';
+import * as XLSX from 'xlsx';
 import { env } from '$env/dynamic/private';
 import {
   appendChatMessage,
@@ -477,6 +478,51 @@ async function extractDocx(fileBytes: Buffer): Promise<ExtractedDocument> {
   };
 }
 
+function extractXlsx(fileBytes: Buffer): ExtractedDocument {
+  const workbook = XLSX.read(fileBytes, { type: 'buffer' });
+  const sheetTexts: string[] = [];
+  let totalRows = 0;
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+
+    const rows = XLSX.utils.sheet_to_json<(string | number | boolean | null)[]>(sheet, {
+      header: 1,
+      blankrows: false,
+      raw: false,
+    });
+
+    totalRows += rows.length;
+
+    const csvText = XLSX.utils.sheet_to_csv(sheet, { blankrows: false, forceQuotes: false }).trim();
+    if (csvText) {
+      sheetTexts.push(`# Sheet: ${sheetName}\n${csvText}`);
+    }
+  }
+
+  const text = sheetTexts.join('\n\n').trim();
+  const rowBasedPages = Math.max(1, Math.ceil(totalRows / 50));
+  const textBasedPages = estimatePageCountFromText(text);
+
+  return {
+    text: text || 'No readable table data could be extracted from this XLSX.',
+    pageCount: Math.max(rowBasedPages, textBasedPages),
+  };
+}
+
+function extractCsv(bytes: ArrayBuffer): ExtractedDocument {
+  const text = new TextDecoder().decode(bytes).trim();
+  const rowCount = text ? text.split(/\r\n|\n|\r/).length : 0;
+  const rowBasedPages = Math.max(1, Math.ceil(rowCount / 50));
+  const textBasedPages = estimatePageCountFromText(text);
+
+  return {
+    text: text || 'No readable text could be extracted from this CSV.',
+    pageCount: Math.max(rowBasedPages, textBasedPages),
+  };
+}
+
 async function extractText(fileName: string, bytes: ArrayBuffer): Promise<ExtractedDocument> {
   const ext = fileName.split('.').pop()?.toLowerCase() || '';
   const textExtensions = new Set(['txt', 'md', 'csv', 'json', 'log', 'xml', 'html']);
@@ -502,6 +548,14 @@ async function extractText(fileName: string, bytes: ArrayBuffer): Promise<Extrac
 
   if (ext === 'docx') {
     return extractDocx(fileBytes);
+  }
+
+  if (ext === 'xlsx' || ext === 'xls') {
+    return extractXlsx(fileBytes);
+  }
+
+  if (ext === 'csv') {
+    return extractCsv(bytes);
   }
 
   if (!textExtensions.has(ext)) {

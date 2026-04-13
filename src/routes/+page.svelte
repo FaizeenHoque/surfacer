@@ -40,7 +40,7 @@
 
   type Message =
     | { id: string; type: 'system'; text: string }
-    | { id: string; type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean }
+    | { id: string; type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean; creditsUsed?: number }
     | { id: string; type: 'user'; content: string; timestamp: string };
 
   type StoredFile = {
@@ -182,6 +182,11 @@
     if (pack.interval === 'month') return '/month';
     if (pack.interval === 'year') return '/year';
     return '';
+  }
+
+  function formatCredits(value: number) {
+    if (Number.isInteger(value)) return String(value);
+    return value.toFixed(2).replace(/\.00$/, '');
   }
 
   function selectedPack() {
@@ -792,6 +797,16 @@
 
           if (payload.type === 'usage' && typeof payload.creditsRemaining === 'number') {
             credits = Math.max(0, payload.creditsRemaining);
+
+            if (typeof payload.creditsUsed === 'number') {
+              const next = [...messages];
+              const target = next[aiIndex];
+              if (target && target.type === 'ai') {
+                next[aiIndex] = { ...target, creditsUsed: payload.creditsUsed };
+                messages = next;
+              }
+            }
+
             return;
           }
         } catch {
@@ -1220,7 +1235,9 @@
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 mb-1.5">
                 <span class="text-xs font-semibold" style="color:#00e5a0">Surfacer</span>
-                <span class="text-[10px] font-mono" style="color:#4a4a5e">{msg.timestamp}</span>
+                <span class="text-[10px] font-mono" style="color:#4a4a5e">
+                  {msg.timestamp}{msg.creditsUsed !== undefined ? ` · ${formatCredits(msg.creditsUsed)} credits used` : ''}
+                </span>
               </div>
               {#if msg.reasoning?.trim()}
                 <details class="ai-reasoning-box mb-2" open={reasoningVisibility === 'show'}>

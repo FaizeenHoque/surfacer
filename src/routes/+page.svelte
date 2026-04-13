@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import katex from 'katex';
-  import { authStore, type CreditPackOption } from '$lib/authStore';
+  import { authStore, type ActiveSubscriptionStatus, type CreditPackOption } from '$lib/authStore';
   import { supabase } from '$lib/supabaseClient';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
@@ -18,6 +18,7 @@
   let isUploading = $state(false);
   let isCreatingCheckout = $state(false);
   let isOpeningBillingPortal = $state(false);
+  let isCancellingSubscription = $state(false);
   let isBillingModalOpen = $state(false);
   let selectedModel = $state('microsoft/Phi-4');
   let reasoningVisibility = $state<'hide' | 'show'>('hide');
@@ -26,6 +27,7 @@
   let credits = $state(0);
   let creditPacks = $state<CreditPackOption[]>([]);
   let selectedPackId = $state<string>('');
+  let activeSubscription = $state<ActiveSubscriptionStatus | null>(null);
   let activeChatId = $state<string | null>(null);
   
   let messagesEl: HTMLElement;
@@ -76,6 +78,7 @@
         };
         await refreshCredits();
         await loadCreditPacks();
+        await refreshSubscriptionStatus();
 
         const billingStatus = new URLSearchParams(window.location.search).get('billing');
         if (billingStatus === 'success') {
@@ -99,6 +102,7 @@
                   : 'Payment succeeded. Credits may take a few seconds to sync from webhook.',
             },
           ];
+          await refreshSubscriptionStatus();
           const nextUrl = new URL(window.location.href);
           nextUrl.searchParams.delete('billing');
           window.history.replaceState({}, '', nextUrl.toString());
@@ -175,6 +179,15 @@
       messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];
       creditPacks = [];
       selectedPackId = '';
+    }
+  }
+
+  async function refreshSubscriptionStatus() {
+    try {
+      const payload = await authStore.getActiveSubscriptionStatus();
+      activeSubscription = payload.hasActiveSubscription ? payload.subscription : null;
+    } catch (err: unknown) {
+      console.error('Failed to load subscription status:', err);
     }
   }
 
@@ -870,6 +883,17 @@
 
   async function handleBuyCredits() {
     if (isCreatingCheckout) return;
+    if (activeSubscription) {
+      messages = [
+        ...messages,
+        {
+          id: makeMessageId('system'),
+          type: 'system',
+          text: 'You already have an active subscription. Cancel it before buying another one.',
+        },
+      ];
+      return;
+    }
     if (!selectedPackId) {
       messages = [...messages, { id: makeMessageId('system'), type: 'system', text: 'No credit pack is configured yet.' }];
       return;
@@ -899,6 +923,38 @@
       messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];
     } finally {
       isOpeningBillingPortal = false;
+    }
+  }
+
+  async function handleCancelSubscription() {
+    if (isCancellingSubscription) return;
+    if (!activeSubscription) {
+      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: 'No active subscription found.' }];
+      return;
+    }
+
+    const confirmed = window.confirm('Cancel your subscription at the next billing date?');
+    if (!confirmed) return;
+
+    try {
+      isCancellingSubscription = true;
+      const result = await authStore.cancelActiveSubscription();
+      messages = [
+        ...messages,
+        {
+          id: makeMessageId('system'),
+          type: 'system',
+          text: result.alreadyScheduled
+            ? 'Cancellation was already scheduled.'
+            : 'Subscription cancellation scheduled for next billing date.',
+        },
+      ];
+      await refreshSubscriptionStatus();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to cancel subscription';
+      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];
+    } finally {
+      isCancellingSubscription = false;
     }
   }
 
@@ -1283,7 +1339,15 @@
 
         <div class="mt-5 flex items-center justify-between gap-3">
           <p class="text-xs font-mono" style="color:#8b90a5">
-            {#if selectedPack()}
+            {#if activeSubscription}
+              Active subscription: {activeSubscription.status}
+              {#if activeSubscription.nextBillingDate}
+                · next billing {new Date(activeSubscription.nextBillingDate).toLocaleDateString()}
+              {/if}
+              {#if activeSubscription.cancelAtNextBillingDate}
+                · cancellation scheduled
+              {/if}
+            {:else if selectedPack()}
               Selected: {selectedPack()?.credits} credits {selectedPack()?.interval === 'month' ? 'per month' : selectedPack()?.interval === 'year' ? 'per year' : 'one time'}
             {:else}
               Select a plan to continue
@@ -1291,22 +1355,38 @@
           </p>
           <button
             onclick={handleBuyCredits}
-            disabled={!selectedPackId || isCreatingCheckout}
+            disabled={!selectedPackId || isCreatingCheckout || Boolean(activeSubscription)}
             class="px-4 py-2 rounded-lg text-sm font-mono font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
           >
-            {isCreatingCheckout ? 'Opening checkout...' : 'Continue to checkout'}
+            {#if activeSubscription}
+              Subscription already active
+            {:else}
+              {isCreatingCheckout ? 'Opening checkout...' : 'Continue to checkout'}
+            {/if}
           </button>
         </div>
 
-        <div class="mt-3 flex justify-end">
+        <div class="mt-3 flex justify-end gap-2">
           <button
             onclick={handleManageSubscription}
             disabled={isOpeningBillingPortal}
             class="px-3 py-1.5 rounded-md text-xs font-mono transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             style="background:#ffffff08; border:1px solid #ffffff1a; color:#c7ccdf"
           >
-            {isOpeningBillingPortal ? 'Opening portal...' : 'Manage subscription / cancel'}
+            {isOpeningBillingPortal ? 'Opening portal...' : 'Manage in billing portal'}
+          </button>
+          <button
+            onclick={handleCancelSubscription}
+            disabled={isCancellingSubscription || !activeSubscription || Boolean(activeSubscription?.cancelAtNextBillingDate)}
+            class="px-3 py-1.5 rounded-md text-xs font-mono transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            style="background:#3a1114; border:1px solid #7f1d1d; color:#fecaca"
+          >
+            {#if activeSubscription?.cancelAtNextBillingDate}
+              Cancellation scheduled
+            {:else}
+              {isCancellingSubscription ? 'Cancelling...' : 'Cancel subscription'}
+            {/if}
           </button>
         </div>
       </div>

@@ -31,6 +31,14 @@ export interface CreditPackOption {
   interval: 'month' | 'year' | 'one_time';
 }
 
+export interface ActiveSubscriptionStatus {
+  id: string;
+  status: string;
+  productId: string | null;
+  nextBillingDate: string | null;
+  cancelAtNextBillingDate: boolean;
+}
+
 function createAuthStore() {
   const { subscribe, set, update } = writable<AuthUser | null>(null);
 
@@ -182,6 +190,55 @@ function createAuthStore() {
       }
 
       return payload as { url: string };
+    },
+    getActiveSubscriptionStatus: async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error('No active session');
+      }
+
+      const response = await fetchWithTimeout('/api/billing/subscription/status', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      }, 25_000);
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to load subscription status');
+      }
+
+      return payload as {
+        hasActiveSubscription: boolean;
+        subscription: ActiveSubscriptionStatus | null;
+      };
+    },
+    cancelActiveSubscription: async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error('No active session');
+      }
+
+      const response = await fetchWithTimeout('/api/billing/subscription/cancel', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      }, 25_000);
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to cancel subscription');
+      }
+
+      return payload as { ok: boolean; alreadyScheduled?: boolean; cancelScheduled?: boolean };
     },
   };
 }

@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import DodoPayments from 'dodopayments';
 import { createAuthedSupabase, getUserFromToken } from '$lib/server/chats';
 import { findCreditPack, getDodoEnvironment } from '$lib/server/billing';
+import { findActiveSubscriptionForUser } from '$lib/server/dodoBilling';
 import { env } from '$env/dynamic/private';
 
 export const POST: RequestHandler = async ({ request, url }) => {
@@ -40,6 +41,19 @@ export const POST: RequestHandler = async ({ request, url }) => {
       bearerToken: apiKey,
       environment: getDodoEnvironment(),
     });
+
+    if (selectedPack.interval && selectedPack.interval !== 'one_time') {
+      const existingSubscription = await findActiveSubscriptionForUser(dodo, user.id, user.email || '');
+      if (existingSubscription) {
+        return json(
+          {
+            error:
+              'You already have an active subscription. Cancel the current subscription before purchasing another one.',
+          },
+          { status: 409 }
+        );
+      }
+    }
 
     const origin = url.origin;
     const returnUrl = `${origin}/?billing=success`;

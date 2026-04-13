@@ -48,6 +48,8 @@ This app now supports:
 - 1 credit consumed per successful AI response
 - checkout-based credit purchases via Dodo Payments (including monthly plans)
 - verified Dodo webhook processing for credit grants
+- prevention of duplicate active subscriptions for recurring plans
+- user-initiated subscription cancellation at next billing date
 
 ### Required environment variables
 
@@ -98,6 +100,7 @@ The checkout session stores `app_user_id` and `credits_to_add` in metadata, and 
 For monthly auto top-ups, configure each mapped Dodo product as a recurring monthly billing product in Dodo.
 
 The app also includes a "Manage subscription / cancel" action that opens Dodo customer portal.
+It also supports direct in-app cancellation scheduling (cancel at next billing date).
 
 ## Dodo MCP In VS Code
 

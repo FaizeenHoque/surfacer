@@ -90,8 +90,9 @@
   let shareDialogLoading = $state(false);
   let shareDialogError = $state<string | null>(null);
   let shareDialogUrl = $state<string | null>(null);
-  let settingsMenuTab = $state<'general' | 'privacy'>('general');
   let isSettingsWindowOpen = $state(false);
+  let settingsMenuTab = $state<'general' | 'privacy'>('general');
+  let isSettingsMenuOpen = $state(false);
 
   // ── Init ────────────────────────────────────────────────────────────────────
   onMount(() => {
@@ -841,10 +842,12 @@
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    if (session?.access_token) return session.access_token;
-
-    const { data: refreshData } = await supabase.auth.refreshSession();
-    return refreshData.session?.access_token || null;
+    if (session?.access_token) {
+      return session.access_token;
+    }
+    // Try to refresh if token missing
+    const { data, error } = await supabase.auth.refreshSession();
+    return data.session?.access_token || null;
   }
 
   async function loadChatHistory(filePath: string, fileName: string) {
@@ -1268,43 +1271,25 @@
       const token = await getAccessToken();
       if (!token) throw new Error('Session expired');
 
-      const submitChatRequest = async (accessToken: string) => {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 90_000);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90_000);
 
-        try {
-          return await fetch('/api/chat/stream', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${accessToken}`,
-            },
-            body: JSON.stringify({
-              message: text,
-              filePath: activeFilePath,
-              chatId: activeChatId,
-              model: selectedModel,
-              followUp,
-              accessToken,
-            }),
-            signal: controller.signal,
-          });
-        } finally {
-          clearTimeout(timeout);
-        }
-      };
-
-      let response = await submitChatRequest(token);
-
-      if (response.status === 401) {
-        const refreshedToken = await getAccessToken();
-        if (!refreshedToken || refreshedToken === token) {
-          const raw401 = await response.text();
-          throw new Error(raw401 || 'Session expired');
-        }
-
-        response = await submitChatRequest(refreshedToken);
-      }
+      const response = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          message: text,
+          filePath: activeFilePath,
+          chatId: activeChatId,
+          model: selectedModel,
+          followUp,
+          accessToken: token,
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
 
       if (!response.ok) {
         const raw = await response.text();
@@ -1723,135 +1708,226 @@
         <p class="text-[9px] font-mono tracking-[2px] uppercase px-1" style="color:#4a4a5e">Templates</p>
       </div>
       <div class="flex flex-col gap-2 px-1 mb-2.5">
+        <input
+          class="template-input"
+          placeholder="Template name"
+          bind:value={templateName}
+          maxlength="80"
+        />
+        <input
+          class="template-input"
+          placeholder="Values, separated, by commas"
+          bind:value={templateFieldsCsv}
+          maxlength="1500"
+        />
         <button
-          onclick={openBillingModal}
-          disabled={isCreatingCheckout || creditPacks.length === 0}
-          class="w-full py-2 rounded-lg text-xs font-mono font-medium transition-all duration-200"
-          style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
+          class="template-create-btn"
+          type="button"
+          onclick={createTemplate}
+          disabled={isCreatingTemplate}
         >
-          {creditPacks.length === 0 ? 'No plans configured' : '+ Buy credits'}
+          {isCreatingTemplate ? 'Saving...' : 'Save template'}
         </button>
+        {#if templateError}
+          <p class="text-[10px] font-mono px-0.5" style="color:#ff8a8a">{templateError}</p>
+        {/if}
       </div>
-      <!-- User -->
-      {#if currentUser}
-        <div class="flex items-center gap-2.5">
-          <div class="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 uppercase" style="background:#00e5a0; color:#09090d">
-            {currentUser.email?.[0] || 'U'}
-          </div>
-          <div class="min-w-0 flex-1">
-            <p class="text-xs font-medium text-white truncate">{currentUser.email?.split('@')[0] || 'User'}</p>
-            <p class="text-[10px] font-mono truncate" style="color:#4a4a5e">{currentUser.email || ''}</p>
-          </div>
-          <button
-            title="Settings"
-            onclick={() => {
-              isSettingsWindowOpen = !isSettingsWindowOpen;
-              if (isSettingsWindowOpen) settingsMenuTab = 'general';
-            }}
-            class="settings-gear-btn p-1.5 rounded-lg transition-all"
-            style="color:#4a4a5e"
-          >
-            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.6">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
-              <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
-            </svg>
-          </button>
-          <button
-            title="Logout"
-            onclick={handleLogout}
-            class="p-1.5 transition-colors rounded"
-            style="color:#4a4a5e"
-            onmouseenter={e => (e.currentTarget as HTMLElement).style.color='white'}
-            onmouseleave={e => (e.currentTarget as HTMLElement).style.color='#4a4a5e'}
-          >
-            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
-            </svg>
-          </button>
-        </div>
 
-        {#if isSettingsWindowOpen}
-          <button class="settings-menu-backdrop" aria-label="Close settings menu" onclick={() => { isSettingsWindowOpen = false; settingsMenuTab = 'general'; }}></button>
-          <div class="settings-menu" role="dialog" aria-modal="true" aria-label="Profile settings menu">
-            <div class="settings-menu-head">
-              <div>
-                <p class="settings-menu-title">Settings</p>
-                <p class="settings-menu-subtitle">Quick controls and privacy</p>
-              </div>
-              <button class="settings-menu-close" onclick={() => { isSettingsWindowOpen = false; settingsMenuTab = 'general'; }} aria-label="Close settings menu">
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+      {#if isLoadingTemplates}
+        <div class="text-[10px] font-mono px-2" style="color:#4a4a5e">Loading templates...</div>
+      {:else if templates.length === 0}
+        <div class="text-[10px] font-mono px-2" style="color:#4a4a5e">No templates yet</div>
+      {:else}
+        <div class="flex flex-col gap-2">
+          {#each templates as template (template.id)}
+            <div class="template-item-row px-1">
+              <button class="template-btn w-full flex items-start gap-2.5 px-3 py-2 rounded-lg text-left transition-all" style="border:1px solid #ffffff0d" onclick={() => void applyTemplate(template)}>
+                <svg class="w-3.5 h-3.5 shrink-0 mt-0.5" style="color:#00e5a0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
                 </svg>
+                <span class="flex flex-col min-w-0 gap-0.5">
+                  <strong class="text-[11px] font-mono truncate" style="color:#d7d7e8">{template.name}</strong>
+                  <span class="text-[10px] font-mono leading-snug truncate" style="color:#4a4a5e">{template.fields_csv}</span>
+                </span>
+              </button>
+              <button
+                class="template-delete-btn"
+                type="button"
+                onclick={() => void deleteTemplate(template.id)}
+                disabled={deletingTemplateId === template.id}
+              >
+                {deletingTemplateId === template.id ? '...' : 'Delete'}
               </button>
             </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
 
-            <div class="settings-menu-tabs">
-              <button class:selected={settingsMenuTab === 'general'} class="settings-menu-tab" onclick={() => { settingsMenuTab = 'general'; }}>General</button>
-              <button class:selected={settingsMenuTab === 'privacy'} class="settings-menu-tab" onclick={() => { settingsMenuTab = 'privacy'; }}>Privacy</button>
+    <!-- Footer -->
+    <div class="p-4 flex flex-col gap-3" style="border-top:1px solid #ffffff0d">
+      <!-- Credits -->
+      <div class="px-3 py-2.5 rounded-lg" style="background:#18181e; border:1px solid #ffffff0d">
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-[10px] font-mono" style="color:#4a4a5e">Credits remaining</span>
+          <span class="text-[10px] font-mono font-medium" style="color:#00e5a0">{credits}</span>
+        </div>
+      </div>
+
+      <button
+        onclick={openBillingModal}
+        disabled={isCreatingCheckout || creditPacks.length === 0}
+        class="w-full py-2 rounded-lg text-xs font-mono font-medium transition-all duration-200"
+        style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
+      >
+        {creditPacks.length === 0 ? 'No plans configured' : '+ Buy credits'}
+      </button>
+      <!-- User Profile & Settings Menu -->
+      {#if currentUser}
+        <div class="relative">
+          <button
+            onclick={() => { isSettingsMenuOpen = !isSettingsMenuOpen; }}
+            class="w-full flex items-center gap-2.5 p-2 rounded-lg transition-all"
+            style="background:{isSettingsMenuOpen ? '#18181e' : 'transparent'}; border:1px solid {isSettingsMenuOpen ? '#ffffff1a' : 'transparent'}"
+          >
+            <div class="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 uppercase" style="background:#00e5a0; color:#09090d">
+              {currentUser.email?.[0] || 'U'}
             </div>
+            <div class="min-w-0 flex-1 text-left">
+              <p class="text-xs font-medium text-white truncate">{currentUser.email?.split('@')[0] || 'User'}</p>
+              <p class="text-[10px] font-mono truncate" style="color:#4a4a5e">{currentUser.email || ''}</p>
+            </div>
+            <svg class="w-3.5 h-3.5 shrink-0" style="color:#4a4a5e; transition:transform 0.2s" style:transform={isSettingsMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)'} fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+            </svg>
+          </button>
 
-            {#if settingsMenuTab === 'general'}
-              <div class="settings-menu-section">
-                <button class="settings-menu-action" onclick={() => { reasoningVisibility = reasoningVisibility === 'show' ? 'hide' : 'show'; }}>
-                  Reasoning: {reasoningVisibility === 'show' ? 'shown' : 'hidden'}
+          {#if isSettingsMenuOpen}
+            <div class="absolute bottom-full left-0 right-0 mb-2 rounded-lg border overflow-hidden" style="background:#0f1219; border-color:#ffffff1a">
+              <!-- Tabs -->
+              <div class="flex border-b" style="border-color:#ffffff0d">
+                <button
+                  onclick={() => { settingsMenuTab = 'general'; }}
+                  class="flex-1 px-3 py-2 text-[10px] font-mono font-medium transition-all text-center"
+                  style="background:{settingsMenuTab === 'general' ? '#00e5a0' : 'transparent'}; color:{settingsMenuTab === 'general' ? '#09090d' : '#8b90a5'}"
+                >
+                  General
                 </button>
-                <button class="settings-menu-action" onclick={() => { selectedModel = 'microsoft/Phi-4'; }}>Basic model</button>
-                <button class="settings-menu-action" onclick={() => { selectedModel = 'deepseek/DeepSeek-V3-0324'; }}>Premium model</button>
-                <button class="settings-menu-action" onclick={() => { void openBillingModal(); }}>Buy credits</button>
-                <button class="settings-menu-action" onclick={() => { messages = []; }}>Clear chat</button>
+                <button
+                  onclick={() => { settingsMenuTab = 'privacy'; }}
+                  class="flex-1 px-3 py-2 text-[10px] font-mono font-medium transition-all text-center"
+                  style="background:{settingsMenuTab === 'privacy' ? '#00e5a0' : 'transparent'}; color:{settingsMenuTab === 'privacy' ? '#09090d' : '#8b90a5'}"
+                >
+                  Privacy
+                </button>
               </div>
-            {:else}
-              <div class="settings-menu-section">
-                <div class="px-2.5 py-2 rounded-lg mb-2" style="background:#18181e; border:1px solid #ffffff0d">
-                  <div class="flex items-center gap-2">
-                    <svg class="w-3 h-3 shrink-0" style="color:#4a4a5e" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                    </svg>
-                    <input
-                      value={extractionQuery}
-                      oninput={handleExtractionSearchInput}
-                      type="text"
-                      placeholder="Search extractions"
-                      class="bg-transparent text-[10px] font-mono text-white placeholder-muted w-full focus:ring-0"
-                      style="color:white"
-                    />
-                  </div>
-                </div>
 
-                {#if isLoadingExtractions}
-                  <div class="px-3 py-3 text-[10px] font-mono text-center" style="color:#4a4a5e">Loading extraction history...</div>
-                {:else if extractionError}
-                  <div class="px-3 py-3 text-[10px] font-mono text-center" style="color:#ff8787">{extractionError}</div>
-                {:else if extractionHistory.length === 0}
-                  <div class="px-3 py-3 text-[10px] font-mono text-center" style="color:#4a4a5e">No extractions found in the last 30 days.</div>
-                {:else}
-                  <div class="settings-history-scroll">
-                    <div class="flex flex-col gap-2">
-                      {#each extractionHistory as extraction (extraction.id)}
-                        <div class="rounded-lg p-2.5" style="background:#0a0d14; border:1px solid #ffffff0d">
-                          <div class="flex items-center justify-between gap-2 mb-1">
-                            <p class="text-[10px] font-semibold truncate" style="color:rgba(255,255,255,0.85)">{extraction.file_name}</p>
-                            <span class="text-[8px] font-mono shrink-0" style="color:#4a4a5e">{formatRelativeTime(extraction.created_at)}</span>
-                          </div>
-                          <p class="text-[9px] leading-snug mb-0.5" style="color:#8b90a5">P: {shorten(extraction.prompt, 72)}</p>
-                          <p class="text-[9px] leading-snug mb-2" style="color:#4a4a5e">R: {shorten(extraction.result, 76)}</p>
-                          <div class="flex items-center gap-1.5">
-                            <button class="px-2 py-1 rounded text-[8px] font-mono transition-all" style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9" onclick={() => void openExtractionDocument(extraction, false)}>
-                              Open
-                            </button>
-                            <button class="px-2 py-1 rounded text-[8px] font-mono transition-all" style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0" onclick={() => { settingsMenuTab = 'general'; isSettingsWindowOpen = false; void openExtractionDocument(extraction, true); }}>
-                              Re-run
-                            </button>
-                          </div>
-                        </div>
+              <!-- Tab Content -->
+              <div class="max-h-60 overflow-y-auto px-3 py-3">
+                {#if settingsMenuTab === 'general'}
+                  <!-- General Tab -->
+                  <div class="space-y-3">
+                    <div class="text-[9px] font-mono uppercase tracking-wider" style="color:#4a4a5e">Model</div>
+                    <select
+                      bind:value={selectedModel}
+                      class="w-full px-2.5 py-1.5 rounded text-[10px] font-mono text-white"
+                      style="background:#18181e; border:1px solid #ffffff0d"
+                    >
+                      {#each modelOptions as model (model.value)}
+                        <option value={model.value}>{model.label}</option>
                       {/each}
+                    </select>
+
+                    <div class="flex items-center justify-between pt-2">
+                      <span class="text-[9px] font-mono uppercase tracking-wider" style="color:#4a4a5e">Reasoning</span>
+                      <button
+                        onclick={() => { reasoningVisibility = reasoningVisibility === 'hide' ? 'show' : 'hide'; }}
+                        class="px-2 py-1 rounded text-[8px] font-mono transition-all"
+                        style="background:{reasoningVisibility === 'show' ? '#00e5a014' : '#18181e'}; border:1px solid {reasoningVisibility === 'show' ? '#00e5a026' : '#ffffff0d'}; color:{reasoningVisibility === 'show' ? '#00e5a0' : '#8b90a5'}"
+                      >
+                        {reasoningVisibility === 'show' ? 'Shown' : 'Hidden'}
+                      </button>
                     </div>
+
+                    <button
+                      onclick={openBillingModal}
+                      disabled={isCreatingCheckout || creditPacks.length === 0}
+                      class="w-full mt-2 py-1.5 rounded text-[9px] font-mono font-medium transition-all"
+                      style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
+                    >
+                      + Buy Credits
+                    </button>
+
+                    <button
+                      onclick={() => { messages = []; activeFilePath = null; activeFileName = null; promptValue = ''; }}
+                      class="w-full py-1.5 rounded text-[9px] font-mono font-medium transition-all"
+                      style="background:#18181e; border:1px solid #ffffff0d; color:#8b90a5"
+                    >
+                      Clear Chat
+                    </button>
+
+                    <button
+                      onclick={handleLogout}
+                      class="w-full py-1.5 rounded text-[9px] font-mono font-medium transition-all" 
+                      style="background:#18181e; border:1px solid #ffffff0d; color:#ff8787"
+                    >
+                      Logout
+                    </button>
+                  </div>
+                {:else}
+                  <!-- Privacy Tab (Extraction History) -->
+                  <div class="space-y-2">
+                    <div class="px-2 py-1.5 rounded" style="background:#18181e; border:1px solid #ffffff0d">
+                      <div class="flex items-center gap-1.5">
+                        <svg class="w-3 h-3 shrink-0" style="color:#4a4a5e" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                        </svg>
+                        <input
+                          value={extractionQuery}
+                          oninput={handleExtractionSearchInput}
+                          type="text"
+                          placeholder="Search"
+                          class="bg-transparent text-[9px] font-mono text-white placeholder:text-gray-500 w-full focus:ring-0 border-0"
+                        />
+                      </div>
+                    </div>
+
+                    {#if isLoadingExtractions}
+                      <div class="px-2 py-2 text-[9px] font-mono text-center" style="color:#4a4a5e">Loading...</div>
+                    {:else if extractionHistory.length === 0}
+                      <div class="px-2 py-2 text-[9px] font-mono text-center" style="color:#4a4a5e">No extractions yet</div>
+                    {:else}
+                      <div class="space-y-1.5 max-h-40 overflow-y-auto">
+                        {#each extractionHistory as extraction (extraction.id)}
+                          <div class="rounded p-1.5 text-[8px]" style="background:#18181e; border:1px solid #ffffff0d">
+                            <p class="font-semibold text-white truncate">{extraction.file_name}</p>
+                            <p class="text-gray-500 truncate" style="color:#4a4a5e">Q: {extraction.prompt.slice(0, 40)}...</p>
+                            <div class="flex gap-1 mt-1">
+                              <button
+                                class="px-1.5 py-0.5 rounded text-[7px] transition-all"
+                                style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
+                                onclick={() => void openExtractionDocument(extraction, false)}
+                              >
+                                Open
+                              </button>
+                              <button
+                                class="px-1.5 py-0.5 rounded text-[7px] transition-all"
+                                style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
+                                onclick={() => void openExtractionDocument(extraction, true)}
+                              >
+                                Re-run
+                              </button>
+                            </div>
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
                   </div>
                 {/if}
               </div>
-            {/if}
-          </div>
-        {/if}
+            </div>
+          {/if}
+        </div>
       {/if}
     </div>
   </aside>
@@ -2116,81 +2192,7 @@
     </div>
   {/if}
 
-  {#if isSettingsWindowOpen}
-    <button class="settings-dialog-backdrop" aria-label="Close settings" onclick={() => { isSettingsWindowOpen = false; }}></button>
-    <div class="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings and extraction history">
-      <div class="settings-dialog-head">
-        <h3>Settings & History</h3>
-        <button class="settings-close-btn" onclick={() => { isSettingsWindowOpen = false; }} aria-label="Close settings">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
-          </svg>
-        </button>
-      </div>
 
-      <div class="settings-content">
-        <!-- Extraction History Section -->
-        <div class="settings-section">
-          <h4 class="settings-section-title">Extraction History (Last 30 Days)</h4>
-          
-          <div class="px-2.5 py-2 rounded-lg mb-3" style="background:#18181e; border:1px solid #ffffff0d">
-            <div class="flex items-center gap-2">
-              <svg class="w-3 h-3 shrink-0" style="color:#4a4a5e" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-              </svg>
-              <input
-                value={extractionQuery}
-                oninput={handleExtractionSearchInput}
-                type="text"
-                placeholder="Search extractions"
-                class="bg-transparent text-[10px] font-mono text-white placeholder-muted w-full focus:ring-0"
-                style="color:white"
-              />
-            </div>
-          </div>
-
-          {#if isLoadingExtractions}
-            <div class="px-3 py-3 text-[10px] font-mono text-center" style="color:#4a4a5e">Loading extraction history...</div>
-          {:else if extractionError}
-            <div class="px-3 py-3 text-[10px] font-mono text-center" style="color:#ff8787">{extractionError}</div>
-          {:else if extractionHistory.length === 0}
-            <div class="px-3 py-3 text-[10px] font-mono text-center" style="color:#4a4a5e">No extractions found in the last 30 days.</div>
-          {:else}
-            <div class="extraction-history-modal-scroll">
-              <div class="flex flex-col gap-2">
-                {#each extractionHistory as extraction (extraction.id)}
-                  <div class="rounded-lg p-2.5" style="background:#0a0d14; border:1px solid #ffffff0d">
-                    <div class="flex items-center justify-between gap-2 mb-1">
-                      <p class="text-[10px] font-semibold truncate" style="color:rgba(255,255,255,0.85)">{extraction.file_name}</p>
-                      <span class="text-[8px] font-mono shrink-0" style="color:#4a4a5e">{formatRelativeTime(extraction.created_at)}</span>
-                    </div>
-                    <p class="text-[9px] leading-snug mb-0.5" style="color:#8b90a5">P: {shorten(extraction.prompt, 72)}</p>
-                    <p class="text-[9px] leading-snug mb-2" style="color:#4a4a5e">R: {shorten(extraction.result, 76)}</p>
-                    <div class="flex items-center gap-1.5">
-                      <button
-                        class="px-2 py-1 rounded text-[8px] font-mono transition-all"
-                        style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
-                        onclick={() => void openExtractionDocument(extraction, false)}
-                      >
-                        Open
-                      </button>
-                      <button
-                        class="px-2 py-1 rounded text-[8px] font-mono transition-all"
-                        style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
-                        onclick={() => void openExtractionDocument(extraction, true)}
-                      >
-                        Re-run
-                      </button>
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/if}
-        </div>
-      </div>
-    </div>
-  {/if}
 
   {#if isBillingModalOpen}
     <button class="fixed inset-0 z-40" style="background:rgba(5,7,10,0.68)" onclick={closeBillingModal} aria-label="Close billing modal"></button>
@@ -2387,6 +2389,7 @@
   }
   .upload-btn:hover { border-color: #00e5a026 !important; color: #00e5a0 !important; background: #00e5a014 !important; }
   .template-btn:hover { background: #18181e; border-color: #ffffff16 !important; }
+  .template-btn:hover strong { color: white !important; }
   .template-item-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -2603,226 +2606,6 @@
     background: #1f2d46;
     border-color: #3b4f75;
     color: #f2f7ff;
-  }
-
-  .settings-dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 58;
-    border: none;
-    background: rgba(4, 6, 10, 0.7);
-  }
-
-  .settings-dialog {
-    position: fixed;
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%, -50%);
-    width: min(94vw, 28rem);
-    max-height: 80vh;
-    border-radius: 1.15rem;
-    border: 1px solid #ffffff1f;
-    background: linear-gradient(160deg, #0f131c 0%, #121826 100%);
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
-    padding: 1rem;
-    z-index: 60;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .settings-dialog-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 1rem;
-    padding-bottom: 0.75rem;
-    border-bottom: 1px solid #ffffff0d;
-  }
-
-  .settings-dialog-head h3 {
-    margin: 0;
-    color: #f1f4ff;
-    font-size: 0.95rem;
-    font-weight: 600;
-  }
-
-  .settings-close-btn {
-    border: 1px solid #ffffff1f;
-    background: #171d2a;
-    color: #96a0bb;
-    border-radius: 0.5rem;
-    width: 1.8rem;
-    height: 1.8rem;
-    display: grid;
-    place-items: center;
-    transition: all 0.14s ease;
-  }
-
-  .settings-close-btn:hover {
-    border-color: #ffffff2f;
-    background: #1e253a;
-    color: #b8c4dc;
-  }
-
-  .settings-content {
-    flex: 1;
-    overflow-y: auto;
-    padding-right: 0.25rem;
-  }
-
-  .settings-content::-webkit-scrollbar {
-    width: 5px;
-  }
-
-  .settings-gear-btn:hover {
-    color: #f2f5ff !important;
-    background: #18181e !important;
-    border-color: #ffffff0d !important;
-  }
-
-  .settings-menu-backdrop {
-    position: fixed;
-    inset: 0;
-    border: none;
-    background: transparent;
-    z-index: 54;
-  }
-
-  .settings-menu {
-    position: absolute;
-    right: 1rem;
-    bottom: calc(100% + 0.75rem);
-    width: min(86vw, 20rem);
-    max-height: min(70vh, 34rem);
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 0.9rem;
-    border-radius: 1rem;
-    border: 1px solid #ffffff1c;
-    background: linear-gradient(160deg, #0e1219 0%, #121826 100%);
-    box-shadow: 0 22px 60px rgba(0, 0, 0, 0.5);
-    z-index: 55;
-  }
-
-  .settings-menu-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem;
-  }
-
-  .settings-menu-title {
-    margin: 0;
-    color: #f2f5ff;
-    font-size: 0.9rem;
-    font-weight: 600;
-  }
-
-  .settings-menu-subtitle {
-    margin: 0.15rem 0 0;
-    color: #8c95ad;
-    font-size: 0.7rem;
-    font-family: 'JetBrains Mono', monospace;
-  }
-
-  .settings-menu-close {
-    width: 1.8rem;
-    height: 1.8rem;
-    display: grid;
-    place-items: center;
-    border-radius: 0.55rem;
-    border: 1px solid #ffffff1a;
-    background: #171d2a;
-    color: #95a0ba;
-    flex-shrink: 0;
-  }
-
-  .settings-menu-tabs {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.45rem;
-  }
-
-  .settings-menu-tab {
-    border: 1px solid #ffffff12;
-    background: #10141d;
-    color: #a0a7be;
-    border-radius: 0.7rem;
-    padding: 0.45rem 0.6rem;
-    font-size: 0.68rem;
-    font-family: 'JetBrains Mono', monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .settings-menu-tab.selected {
-    color: #00e5a0;
-    border-color: #00e5a03a;
-    background: #00e5a012;
-  }
-
-  .settings-menu-section {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    overflow: hidden;
-  }
-
-  .settings-menu-action {
-    width: 100%;
-    text-align: left;
-    border: 1px solid #ffffff0d;
-    background: #11151f;
-    color: #d6dbeb;
-    border-radius: 0.75rem;
-    padding: 0.6rem 0.7rem;
-    font-size: 0.72rem;
-    font-family: 'JetBrains Mono', monospace;
-    transition: all 0.14s ease;
-  }
-
-  .settings-menu-action:hover {
-    border-color: #00e5a026;
-    background: #141c28;
-    color: #ffffff;
-  }
-
-  .settings-history-scroll {
-    max-height: 14rem;
-    overflow-y: auto;
-    padding-right: 0.2rem;
-  }
-
-  .settings-content::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .settings-content::-webkit-scrollbar-thumb {
-    background: #404558;
-    border-radius: 3px;
-  }
-
-  .settings-content::-webkit-scrollbar-thumb:hover {
-    background: #505666;
-  }
-
-  .settings-section {
-    margin-bottom: 1.5rem;
-  }
-
-  .settings-section:last-child {
-    margin-bottom: 0;
-  }
-
-  .settings-section-title {
-    margin: 0 0 0.75rem 0;
-    color: #e8ecf7;
-    font-size: 0.8rem;
-    font-weight: 600;
-    font-family: 'JetBrains Mono', monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
 
   .extraction-history-modal-scroll {

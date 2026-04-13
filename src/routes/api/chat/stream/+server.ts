@@ -729,22 +729,8 @@ export const POST: RequestHandler = async ({ request }) => {
   const requestId = Math.random().toString(36).slice(2, 10);
   let rateLimitLease: RateLimitLease | null = null;
   try {
-    // Read request body once
-    let payload: any = {};
-    try {
-      payload = await request.json();
-    } catch {
-      payload = {};
-    }
-
-    // Extract token from header or body
-    let token = '';
     const authHeader = request.headers.get('authorization');
-    if (authHeader?.startsWith('Bearer ')) {
-      token = authHeader.slice(7);
-    } else if (typeof payload.accessToken === 'string') {
-      token = payload.accessToken;
-    }
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
     if (!token) {
       return json({ error: 'Missing auth token' }, { status: 401 });
@@ -753,6 +739,7 @@ export const POST: RequestHandler = async ({ request }) => {
     const supabase = createAuthedSupabase(token);
     const user = await getUserFromToken(supabase, token);
 
+    const payload = await request.json();
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
     const filePath = typeof payload.filePath === 'string' ? payload.filePath : '';
     const requestedModel = typeof payload.model === 'string' ? payload.model : '';

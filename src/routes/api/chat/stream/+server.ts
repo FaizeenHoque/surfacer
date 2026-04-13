@@ -770,6 +770,26 @@ export const POST: RequestHandler = async ({ request }) => {
     const session = await getOrCreateChatSession(supabase, user.id, filePath, fileName);
     const priorMessages = (await listChatMessages(supabase, session.id)).slice(-MAX_CONTEXT_MESSAGES);
 
+    // Prevent duplicate file uploads: check if file already has analysis in this session
+    if (!isFollowUp && priorMessages.length > 0) {
+      debugLog(requestId, 'duplicate_file_detected', {
+        filePath,
+        fileName,
+        priorMessageCount: priorMessages.length,
+        sessionId: session.id,
+      });
+      rateLimitLease.release();
+      rateLimitLease = null;
+      return json(
+        {
+          error: `You've already started analyzing "${fileName}". Continue with follow-up questions, or start a new chat with a different file.`,
+          sessionId: session.id,
+          isDuplicateFile: true,
+        },
+        { status: 400 }
+      );
+    }
+
     await appendChatMessage(supabase, session.id, user.id, 'user', message);
 
     const chatMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [

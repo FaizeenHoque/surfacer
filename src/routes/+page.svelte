@@ -15,6 +15,8 @@
   let isThinking = $state(false);
   let isLoadingChat = $state(false);
   let isUploading = $state(false);
+  let selectedModel = $state('minimax/minimax-m2.5:free');
+  let reasoningVisibility = $state<'hide' | 'show'>('hide');
   let messages = $state<Message[]>([]);
   let currentUser = $state<{ id: string; email: string } | null>(null);
   let credits = $state(0);
@@ -24,9 +26,15 @@
   let textareaEl: HTMLTextAreaElement;
   let fileInputEl: HTMLInputElement;
 
+  const modelOptions = [
+    { label: 'Minimax M2.5 (Free)', value: 'minimax/minimax-m2.5:free' },
+    { label: 'Gemini 2.0 Flash (Free)', value: 'google/gemini-2.0-flash-exp:free' },
+    { label: 'Llama 3.3 70B Instruct (Free)', value: 'meta-llama/llama-3.3-70b-instruct:free' },
+  ];
+
   type Message =
     | { type: 'system'; text: string }
-    | { type: 'ai'; content: string; timestamp: string; streaming?: boolean }
+    | { type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean }
     | { type: 'user'; content: string; timestamp: string };
 
   type StoredFile = {
@@ -352,6 +360,7 @@
             return {
               type: 'ai' as const,
               content: entry.content,
+              reasoning: '',
               timestamp: formatTimestamp(entry.created_at),
               streaming: false,
             };
@@ -531,6 +540,7 @@
           message: text,
           filePath: activeFilePath,
           chatId: activeChatId,
+          model: selectedModel,
         }),
       });
 
@@ -546,27 +556,70 @@
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let content = '';
+      let reasoning = '';
+      let streamBuffer = '';
+
+      const applyAiUpdate = () => {
+        const next = [...messages];
+        const target = next[aiIndex];
+        if (target && target.type === 'ai') {
+          next[aiIndex] = { ...target, content, reasoning, streaming: true };
+          messages = next;
+        }
+      };
+
+      const handleEventLine = (line: string) => {
+        if (!line.trim()) return;
+
+        try {
+          const payload = JSON.parse(line) as { type?: string; delta?: string };
+          if (payload.type === 'reasoning' && payload.delta) {
+            reasoning += payload.delta;
+            applyAiUpdate();
+            return;
+          }
+
+          if (payload.type === 'content' && payload.delta) {
+            content += payload.delta;
+            applyAiUpdate();
+            return;
+          }
+
+          if (payload.type === 'done') {
+            return;
+          }
+        } catch {
+          content += line;
+          applyAiUpdate();
+        }
+      };
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        content += decoder.decode(value, { stream: true });
-        const next = [...messages];
-        const target = next[aiIndex];
-        if (target && target.type === 'ai') {
-          next[aiIndex] = { ...target, content, streaming: true };
-          messages = next;
+        streamBuffer += decoder.decode(value, { stream: true });
+
+        let splitAt = streamBuffer.indexOf('\n');
+        while (splitAt >= 0) {
+          const line = streamBuffer.slice(0, splitAt);
+          streamBuffer = streamBuffer.slice(splitAt + 1);
+          handleEventLine(line);
+          splitAt = streamBuffer.indexOf('\n');
         }
+
         scrollToBottom();
       }
 
-      content += decoder.decode();
+      streamBuffer += decoder.decode();
+      if (streamBuffer.trim()) {
+        handleEventLine(streamBuffer.trim());
+      }
 
       const next = [...messages];
       const target = next[aiIndex];
       if (target && target.type === 'ai') {
-        next[aiIndex] = { ...target, content, streaming: false };
+        next[aiIndex] = { ...target, content, reasoning, streaming: false };
         messages = next;
       }
     } catch (err: unknown) {
@@ -792,8 +845,25 @@
       </div>
 
       <div class="flex items-center gap-3">
-        <div class="desktop-only px-3 py-1.5 rounded-lg text-xs font-mono" style="background:#18181e; border:1px solid #ffffff0d; color:#4a4a5e">
-          Model: minimax/minimax-m2.5:free
+        <div class="flex items-center gap-2">
+          <select
+            bind:value={selectedModel}
+            class="model-select desktop-only px-3 py-1.5 rounded-lg text-xs font-mono"
+            style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
+          >
+            {#each modelOptions as model (model.value)}
+              <option value={model.value}>{model.label}</option>
+            {/each}
+          </select>
+
+          <select
+            bind:value={reasoningVisibility}
+            class="model-select desktop-only px-3 py-1.5 rounded-lg text-xs font-mono"
+            style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
+          >
+            <option value="hide">Reasoning: hidden</option>
+            <option value="show">Reasoning: shown</option>
+          </select>
         </div>
         {#each [
           { title: 'Share', path: 'M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z' },
@@ -836,6 +906,14 @@
                 <span class="text-xs font-semibold" style="color:#00e5a0">Surfacer</span>
                 <span class="text-[10px] font-mono" style="color:#4a4a5e">{msg.timestamp} · 1 credit used</span>
               </div>
+              {#if msg.reasoning?.trim()}
+                <details class="ai-reasoning-box mb-2" open={reasoningVisibility === 'show'}>
+                  <summary class="ai-reasoning-summary">Reasoning trace</summary>
+                  <div class="ai-reasoning text-xs leading-relaxed mt-1.5">
+                    {@html renderMarkdown(msg.reasoning, msg.streaming)}
+                  </div>
+                </details>
+              {/if}
               <div class="ai-content text-sm leading-relaxed" style="color:rgba(255,255,255,0.8)">
                 {@html renderMarkdown(msg.content, msg.streaming)}{#if msg.streaming}<span class="typing-cursor"></span>{/if}
               </div>
@@ -874,21 +952,6 @@
         {/if}
       {/each}
 
-      <!-- Thinking indicator -->
-      {#if isThinking}
-        <div class="flex gap-3 max-w-3xl">
-          <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background:#00e5a014; border:1px solid #00e5a026">
-            <svg class="w-3.5 h-3.5" style="color:#00e5a0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-            </svg>
-          </div>
-          <div class="flex items-center gap-1.5 px-4 py-3 rounded-2xl rounded-tl-sm" style="background:#111116; border:1px solid #ffffff0d">
-            <div class="dot"></div>
-            <div class="dot" style="animation-delay:0.2s"></div>
-            <div class="dot" style="animation-delay:0.4s"></div>
-          </div>
-        </div>
-      {/if}
     </div>
 
     <!-- Chips (empty - will be populated with project templates) -->
@@ -966,14 +1029,25 @@
     animation: blink 1s step-end infinite;
   }
 
-  /* Thinking dots */
-  .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #00e5a0;
-    display: inline-block;
-    animation: pulseDot 1.4s ease-in-out infinite;
+  .ai-reasoning-box {
+    border: 1px solid #ffffff12;
+    border-radius: 10px;
+    background: #101018;
+    padding: 0.5rem 0.65rem;
+  }
+
+  .ai-reasoning-summary {
+    cursor: pointer;
+    color: #8f92a8;
+    font-size: 0.7rem;
+    font-family: 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    user-select: none;
+  }
+
+  .ai-reasoning {
+    color: #a5a9c3;
   }
 
   /* Message animation */
@@ -1107,9 +1181,5 @@
   @keyframes blink {
     0%, 100% { opacity: 1; }
     50%       { opacity: 0; }
-  }
-  @keyframes pulseDot {
-    0%, 80%, 100% { transform: scale(0.6); opacity: 0.3; }
-    40%           { transform: scale(1); opacity: 1; }
   }
 </style>

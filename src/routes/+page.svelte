@@ -17,7 +17,6 @@
   let isLoadingChat = $state(false);
   let isUploading = $state(false);
   let isCreatingCheckout = $state(false);
-  let isOpeningBillingPortal = $state(false);
   let isCancellingSubscription = $state(false);
   let isBillingModalOpen = $state(false);
   let selectedModel = $state('microsoft/Phi-4');
@@ -80,7 +79,8 @@
         await loadCreditPacks();
         await refreshSubscriptionStatus();
 
-        const billingStatus = new URLSearchParams(window.location.search).get('billing');
+        const currentUrl = new URL(window.location.href);
+        const billingStatus = currentUrl.searchParams.get('billing');
         if (billingStatus === 'success') {
           const creditsBefore = credits;
           let creditsAfter = creditsBefore;
@@ -120,6 +120,27 @@
           const nextUrl = new URL(window.location.href);
           nextUrl.searchParams.delete('billing');
           window.history.replaceState({}, '', nextUrl.toString());
+        }
+
+        // Dodo may append subscription/payment details to return URLs. Remove them from browser URL.
+        const sensitiveParams = [
+          'subscription_id',
+          'status',
+          'email',
+          'customer_id',
+          'payment_id',
+          'session_id',
+          'checkout_id',
+        ];
+        let cleaned = false;
+        for (const key of sensitiveParams) {
+          if (currentUrl.searchParams.has(key)) {
+            currentUrl.searchParams.delete(key);
+            cleaned = true;
+          }
+        }
+        if (cleaned) {
+          window.history.replaceState({}, '', currentUrl.toString());
         }
 
         await loadFiles();
@@ -869,7 +890,8 @@
     }
   }
 
-  function openBillingModal() {
+  async function openBillingModal() {
+    await refreshSubscriptionStatus();
     if (!selectedPackId && creditPacks.length > 0) {
       selectedPackId = creditPacks[0].id;
     }
@@ -911,28 +933,8 @@
     }
   }
 
-  async function handleManageSubscription() {
-    if (isOpeningBillingPortal) return;
-
-    try {
-      isOpeningBillingPortal = true;
-      const session = await authStore.createBillingPortalSession();
-      window.location.href = session.url;
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to open billing portal';
-      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];
-    } finally {
-      isOpeningBillingPortal = false;
-    }
-  }
-
   async function handleCancelSubscription() {
     if (isCancellingSubscription) return;
-    if (!activeSubscription) {
-      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: 'No active subscription found.' }];
-      return;
-    }
-
     const confirmed = window.confirm('Cancel your subscription at the next billing date?');
     if (!confirmed) return;
 
@@ -1369,16 +1371,8 @@
 
         <div class="mt-3 flex justify-end gap-2">
           <button
-            onclick={handleManageSubscription}
-            disabled={isOpeningBillingPortal}
-            class="px-3 py-1.5 rounded-md text-xs font-mono transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            style="background:#ffffff08; border:1px solid #ffffff1a; color:#c7ccdf"
-          >
-            {isOpeningBillingPortal ? 'Opening portal...' : 'Manage in billing portal'}
-          </button>
-          <button
             onclick={handleCancelSubscription}
-            disabled={isCancellingSubscription || !activeSubscription || Boolean(activeSubscription?.cancelAtNextBillingDate)}
+            disabled={isCancellingSubscription || Boolean(activeSubscription?.cancelAtNextBillingDate)}
             class="px-3 py-1.5 rounded-md text-xs font-mono transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             style="background:#3a1114; border:1px solid #7f1d1d; color:#fecaca"
           >

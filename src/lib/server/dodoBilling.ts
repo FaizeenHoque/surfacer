@@ -17,6 +17,10 @@ type BasicSubscription = {
 
 const ACTIVE_STATUSES: Array<BasicSubscription['status']> = ['active', 'pending', 'on_hold'];
 
+function isActiveLike(subscription: BasicSubscription) {
+  return ACTIVE_STATUSES.includes(subscription.status);
+}
+
 export function createDodoClient() {
   const apiKey = env.DODO_PAYMENTS_API_KEY || '';
   if (!apiKey) {
@@ -65,14 +69,19 @@ export async function findActiveSubscriptionForUser(client: DodoPayments, appUse
 
   const customerId = await findCustomerIdByEmail(client, normalizedEmail);
   if (customerId) {
-    for (const status of ACTIVE_STATUSES) {
-      const page = await client.subscriptions.list({
-        customer_id: customerId,
-        status,
-        page_number: 1,
-        page_size: 20,
-      });
-      const hit = page.items[0];
+    const first = await client.subscriptions.list({
+      customer_id: customerId,
+      page_number: 1,
+      page_size: 50,
+    });
+    const pages = [first];
+
+    while (pages[pages.length - 1].hasNextPage() && pages.length < 10) {
+      pages.push(await pages[pages.length - 1].getNextPage());
+    }
+
+    for (const page of pages) {
+      const hit = page.items.find((sub) => isActiveLike(sub as BasicSubscription));
       if (hit?.subscription_id) {
         return hit as BasicSubscription;
       }

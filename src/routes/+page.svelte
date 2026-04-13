@@ -40,7 +40,7 @@
 
   type Message =
     | { id: string; type: 'system'; text: string }
-    | { id: string; type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean; creditsUsed?: number }
+    | { id: string; type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean; creditsUsed?: number; suggestedQuestions?: string[] }
     | { id: string; type: 'user'; content: string; timestamp: string };
 
   type StoredFile = {
@@ -187,6 +187,84 @@
   function formatCredits(value: number) {
     if (Number.isInteger(value)) return String(value);
     return value.toFixed(2).replace(/\.00$/, '');
+  }
+
+  function buildFollowUpSuggestions(text: string) {
+    const normalized = text.toLowerCase();
+    const suggestions: string[] = [];
+
+    const pushUnique = (question: string) => {
+      if (!suggestions.includes(question)) {
+        suggestions.push(question);
+      }
+    };
+
+    const rules = [
+      {
+        keywords: ['party', 'parties', 'buyer', 'seller', 'tenant', 'landlord', 'client', 'contractor', 'licensee', 'licensor'],
+        questions: [
+          'Who are the contract parties and what are their roles?',
+          'What obligations does each party take on?',
+        ],
+      },
+      {
+        keywords: ['payment', 'fee', 'invoice', 'billing', 'due', 'late', 'overdue', 'price'],
+        questions: [
+          'What are the penalties for late payment?',
+          'When are payments due and how are invoices handled?',
+        ],
+      },
+      {
+        keywords: ['termination', 'terminate', 'renewal', 'renew', 'expiry', 'notice', 'cancel'],
+        questions: [
+          'Are there any auto-renewal clauses?',
+          'What notice is required to terminate the agreement?',
+        ],
+      },
+      {
+        keywords: ['liability', 'indemnity', 'damages', 'warranty', 'responsibility'],
+        questions: [
+          'Summarise the liability limitations.',
+          'Is there an indemnity clause, and who does it protect?',
+        ],
+      },
+      {
+        keywords: ['confidential', 'nda', 'non-disclosure', 'privacy'],
+        questions: [
+          'What confidentiality obligations apply?',
+          'How long do the confidentiality obligations last?',
+        ],
+      },
+      {
+        keywords: ['law', 'jurisdiction', 'venue', 'court', 'dispute'],
+        questions: [
+          'What governing law applies?',
+          'Which court or venue resolves disputes?',
+        ],
+      },
+    ];
+
+    for (const rule of rules) {
+      if (rule.keywords.some((keyword) => normalized.includes(keyword))) {
+        for (const question of rule.questions) {
+          pushUnique(question);
+          if (suggestions.length >= 3) return suggestions.slice(0, 3);
+        }
+      }
+    }
+
+    const fallbackQuestions = [
+      'What are the key obligations in this document?',
+      'Are there any hidden risks or exceptions?',
+      'What deadlines or notice periods should I watch for?',
+    ];
+
+    for (const question of fallbackQuestions) {
+      if (suggestions.length >= 3) break;
+      pushUnique(question);
+    }
+
+    return suggestions.slice(0, 3);
   }
 
   function selectedPack() {
@@ -679,15 +757,18 @@
     }
   }
 
-  async function sendMessage() {
-    const text = promptValue.trim();
+  async function sendMessage(options: { followUp?: boolean; text?: string } = {}) {
+    const text = (options.text ?? promptValue).trim();
+    const followUp = options.followUp === true;
     if (!text || isThinking || isLoadingChat) return;
     if (!activeFilePath) {
       messages = [...messages, { id: makeMessageId('system'), type: 'system', text: 'Upload and select a file first.' }];
       return;
     }
 
-    promptValue = '';
+    if (!options.text) {
+      promptValue = '';
+    }
     if (textareaEl) {
       textareaEl.style.height = 'auto';
     }
@@ -717,6 +798,7 @@
           filePath: activeFilePath,
           chatId: activeChatId,
           model: selectedModel,
+          followUp,
         }),
         signal: controller.signal,
       }).finally(() => clearTimeout(timeout));
@@ -869,7 +951,13 @@
       const next = [...messages];
       const target = next[aiIndex];
       if (target && target.type === 'ai') {
-        next[aiIndex] = { ...target, content, reasoning, streaming: false };
+        next[aiIndex] = {
+          ...target,
+          content,
+          reasoning,
+          streaming: false,
+          suggestedQuestions: buildFollowUpSuggestions(content || reasoning || text),
+        };
         messages = next;
       }
 
@@ -1236,7 +1324,7 @@
               <div class="flex items-center gap-2 mb-1.5">
                 <span class="text-xs font-semibold" style="color:#00e5a0">Surfacer</span>
                 <span class="text-[10px] font-mono" style="color:#4a4a5e">
-                  {msg.timestamp}{msg.creditsUsed !== undefined ? ` · ${formatCredits(msg.creditsUsed)} credits used` : ''}
+                  {msg.timestamp}{msg.creditsUsed !== undefined ? ` · ${formatCredits(msg.creditsUsed)} ${msg.creditsUsed === 1 ? 'credit' : 'credits'} used` : ''}
                 </span>
               </div>
               {#if msg.reasoning?.trim()}
@@ -1254,6 +1342,24 @@
                 {@html renderMarkdown(msg.content)}{#if msg.streaming && msg.content.trim()}<span class="typing-cursor"></span>{/if}
               </div>
               {#if !msg.streaming}
+                {#if msg.suggestedQuestions?.length}
+                  <div class="mt-3 rounded-2xl p-3" style="background:#111116; border:1px solid #ffffff0d">
+                    <div class="flex items-center gap-2 mb-2">
+                      <span class="text-[10px] font-mono uppercase tracking-[0.18em]" style="color:#4a4a5e">Suggested follow-ups</span>
+                    </div>
+                    <div class="flex flex-col gap-2">
+                      {#each msg.suggestedQuestions as question (question)}
+                        <button
+                          class="follow-up-btn text-left px-3 py-2 rounded-xl text-sm leading-relaxed transition-all"
+                          style="background:#18181e; border:1px solid #ffffff0d; color:rgba(255,255,255,0.85)"
+                          onclick={() => void sendMessage({ followUp: true, text: question })}
+                        >
+                          {question}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
                 <div class="flex items-center gap-2 mt-2.5">
                   {#each [
                     { label: 'Copy',  path: 'M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z' },
@@ -1311,7 +1417,7 @@
           oninput={(e) => autoResize(e.currentTarget as HTMLTextAreaElement)}
         ></textarea>
         <button
-          onclick={sendMessage}
+          onclick={() => void sendMessage()}
           title="Send message"
           disabled={isThinking || isLoadingChat || !promptValue.trim()}
           class="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all mb-0.5 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"

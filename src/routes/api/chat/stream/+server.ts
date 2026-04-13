@@ -36,6 +36,7 @@ const BASIC_MODEL_MULTIPLIER = 1;
 const PREMIUM_MODEL_MULTIPLIER = 10;
 const CREDIT_BASE_COST = 2;
 const CREDIT_PAGE_COST = 0.2;
+const FOLLOW_UP_CREDIT_COST = 1;
 const DEFAULT_CHARS_PER_PAGE = 3000;
 
 type ExtractedDocument = {
@@ -590,6 +591,7 @@ export const POST: RequestHandler = async ({ request }) => {
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
     const filePath = typeof payload.filePath === 'string' ? payload.filePath : '';
     const requestedModel = typeof payload.model === 'string' ? payload.model : '';
+    const isFollowUp = payload.followUp === true;
     const model = ALLOWED_MODELS.has(requestedModel) ? requestedModel : BASIC_MODEL;
 
     debugLog(requestId, 'request_received', {
@@ -651,7 +653,7 @@ export const POST: RequestHandler = async ({ request }) => {
       pageCount = estimatePageCountFromText(fileText || '');
     }
 
-    const estimatedCost = calculateCreditCost(pageCount, model);
+    const estimatedCost = isFollowUp ? FOLLOW_UP_CREDIT_COST : calculateCreditCost(pageCount, model);
     const currentCredits = await getUserCredits(supabase, user.id);
 
     if (currentCredits < estimatedCost) {
@@ -736,8 +738,16 @@ export const POST: RequestHandler = async ({ request }) => {
 
               if (assistantResponse.trim()) {
                 await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
-                const responseCost = calculateCreditCost(pageCount, responseModel);
+                const responseCost = isFollowUp ? FOLLOW_UP_CREDIT_COST : calculateCreditCost(pageCount, responseModel);
                 const creditsRemaining = await setUserCredits(supabase, user.id, currentCredits - responseCost);
+                sendEvent({
+                  type: 'followup_suggestions',
+                  suggestions: [
+                    'What are the penalties for late payment?',
+                    'Summarise the liability limitations.',
+                    'Are there any auto-renewal clauses?',
+                  ],
+                });
                 sendEvent({
                   type: 'usage',
                   creditsUsed: responseCost,
@@ -814,7 +824,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
               if (assistantResponse.trim()) {
                 await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
-                const responseCost = calculateCreditCost(pageCount, responseModel);
+                const responseCost = isFollowUp ? FOLLOW_UP_CREDIT_COST : calculateCreditCost(pageCount, responseModel);
                 const creditsRemaining = await setUserCredits(supabase, user.id, currentCredits - responseCost);
                 sendEvent({
                   type: 'usage',

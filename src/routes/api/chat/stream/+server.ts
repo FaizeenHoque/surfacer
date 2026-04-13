@@ -12,6 +12,7 @@ import {
   getOrCreateChatSession,
   getUserFromToken,
   listChatMessages,
+  saveExtractionRun,
   setUserCredits,
 } from '$lib/server/chats';
 
@@ -510,6 +511,8 @@ async function finalizeAssistantResponse(options: {
   apiKey: string;
   sessionId: string;
   userId: string;
+  filePath: string;
+  fileName: string;
   assistantResponse: string;
   currentCredits: number;
   responseCost: number;
@@ -525,6 +528,8 @@ async function finalizeAssistantResponse(options: {
     apiKey,
     sessionId,
     userId,
+    filePath,
+    fileName,
     assistantResponse,
     currentCredits,
     responseCost,
@@ -540,6 +545,14 @@ async function finalizeAssistantResponse(options: {
   if (!trimmedResponse) return currentCredits;
 
   await appendChatMessage(supabase, sessionId, userId, 'assistant', trimmedResponse);
+  await saveExtractionRun(supabase, {
+    userId,
+    chatId: sessionId,
+    filePath,
+    fileName,
+    prompt: originalQuestion,
+    result: trimmedResponse,
+  });
   const creditsRemaining = await setUserCredits(supabase, userId, currentCredits - responseCost);
 
   sendEvent({
@@ -882,6 +895,8 @@ export const POST: RequestHandler = async ({ request }) => {
                   apiKey,
                   sessionId: session.id,
                   userId: user.id,
+                  filePath,
+                  fileName,
                   assistantResponse,
                   currentCredits,
                   responseCost,
@@ -968,6 +983,8 @@ export const POST: RequestHandler = async ({ request }) => {
                   apiKey,
                   sessionId: session.id,
                   userId: user.id,
+                  filePath,
+                  fileName,
                   assistantResponse,
                   currentCredits,
                   responseCost,

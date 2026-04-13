@@ -22,6 +22,17 @@ export type ChatMessageRow = {
   created_at: string;
 };
 
+export type ExtractionRunRow = {
+  id: string;
+  user_id: string;
+  chat_id: string | null;
+  file_path: string;
+  file_name: string;
+  prompt: string;
+  result: string;
+  created_at: string;
+};
+
 export function createAuthedSupabase(token: string) {
   return createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
     global: {
@@ -126,6 +137,73 @@ export async function appendChatMessage(
   }
 
   return data as ChatMessageRow;
+}
+
+export async function saveExtractionRun(
+  supabase: SupabaseClient,
+  input: {
+    userId: string;
+    chatId?: string | null;
+    filePath: string;
+    fileName: string;
+    prompt: string;
+    result: string;
+  }
+) {
+  const { data, error } = await supabase
+    .from('extraction_runs')
+    .insert({
+      user_id: input.userId,
+      chat_id: input.chatId || null,
+      file_path: input.filePath,
+      file_name: input.fileName,
+      prompt: input.prompt,
+      result: input.result,
+    })
+    .select('id, user_id, chat_id, file_path, file_name, prompt, result, created_at')
+    .single();
+
+  if (error || !data) {
+    throw error || new Error('Failed to save extraction run');
+  }
+
+  return data as ExtractionRunRow;
+}
+
+export async function listExtractionRuns(
+  supabase: SupabaseClient,
+  input: {
+    userId: string;
+    searchQuery?: string;
+    days?: number;
+    limit?: number;
+  }
+) {
+  const days = Math.max(1, Math.min(input.days || 30, 90));
+  const limit = Math.max(1, Math.min(input.limit || 100, 300));
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+  let query = supabase
+    .from('extraction_runs')
+    .select('id, user_id, chat_id, file_path, file_name, prompt, result, created_at')
+    .eq('user_id', input.userId)
+    .gte('created_at', cutoff)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  const term = (input.searchQuery || '').trim();
+  if (term) {
+    const escaped = term.replace(/[%_,]/g, (char) => `\\${char}`);
+    const pattern = `%${escaped}%`;
+    query = query.or(`file_name.ilike.${pattern},prompt.ilike.${pattern},result.ilike.${pattern}`);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    throw error;
+  }
+
+  return (data || []) as ExtractionRunRow[];
 }
 
 export async function getUserCredits(supabase: SupabaseClient, userId: string) {

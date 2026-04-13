@@ -51,9 +51,24 @@
     color: string;
   };
 
+  type ExtractionHistoryItem = {
+    id: string;
+    chat_id: string | null;
+    file_path: string;
+    file_name: string;
+    prompt: string;
+    result: string;
+    created_at: string;
+  };
+
   // ── Files data ─────────────────────────────────────────────────────────────
   let files = $state<StoredFile[]>([]);
   let templates = $state<string[]>([]);
+  let extractionHistory = $state<ExtractionHistoryItem[]>([]);
+  let extractionQuery = $state('');
+  let isLoadingExtractions = $state(false);
+  let extractionError = $state<string | null>(null);
+  let extractionSearchTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ── Init ────────────────────────────────────────────────────────────────────
   onMount(() => {
@@ -143,6 +158,7 @@
         }
 
         await loadFiles();
+        await loadExtractionHistory();
       } else {
         goto('/auth');
       }
@@ -152,6 +168,9 @@
 
     return () => {
       viewport.removeEventListener('change', syncViewport);
+      if (extractionSearchTimer) {
+        clearTimeout(extractionSearchTimer);
+      }
     };
   });
 
@@ -498,6 +517,25 @@
     return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  function shorten(text: string, max = 96) {
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    if (normalized.length <= max) return normalized;
+    return `${normalized.slice(0, max - 1)}...`;
+  }
+
+  function formatRelativeTime(value: string) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'recently';
+    const diffMs = Date.now() - date.getTime();
+    const minutes = Math.floor(diffMs / 60_000);
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+
   async function getAccessToken() {
     const {
       data: { session },
@@ -597,6 +635,78 @@
         color: extensionColor(ext),
       };
     });
+  }
+
+  async function loadExtractionHistory(query = extractionQuery) {
+    try {
+      extractionError = null;
+      isLoadingExtractions = true;
+
+      const token = await getAccessToken();
+      if (!token) {
+        extractionHistory = [];
+        return;
+      }
+
+      const response = await fetch(`/api/extractions?days=30&query=${encodeURIComponent(query.trim())}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to load extraction history');
+      }
+
+      extractionHistory = Array.isArray(payload.extractions) ? payload.extractions : [];
+    } catch (err: unknown) {
+      extractionError = err instanceof Error ? err.message : 'Failed to load extraction history';
+      extractionHistory = [];
+    } finally {
+      isLoadingExtractions = false;
+    }
+  }
+
+  function handleExtractionSearchInput(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    extractionQuery = input.value;
+
+    if (extractionSearchTimer) {
+      clearTimeout(extractionSearchTimer);
+    }
+
+    extractionSearchTimer = setTimeout(() => {
+      void loadExtractionHistory(extractionQuery);
+    }, 220);
+  }
+
+  async function openExtractionDocument(item: ExtractionHistoryItem, withPrompt: boolean) {
+    let target = files.find((file) => file.path === item.file_path);
+    if (!target) {
+      await loadFiles();
+      target = files.find((file) => file.path === item.file_path);
+    }
+
+    if (!target) {
+      messages = [
+        ...messages,
+        {
+          id: makeMessageId('system'),
+          type: 'system',
+          text: 'Original document is no longer in your library. Upload it again to rerun this extraction.',
+        },
+      ];
+      return;
+    }
+
+    await selectFile(target);
+    promptValue = withPrompt ? item.prompt : '';
+    await tick();
+    if (textareaEl) {
+      autoResize(textareaEl);
+      textareaEl.focus();
+    }
   }
 
   function openUploadPicker() {
@@ -913,6 +1023,8 @@
         messages = next;
       }
 
+      void loadExtractionHistory();
+
     } catch (err: unknown) {
       const errorText = err instanceof DOMException && err.name === 'AbortError'
         ? 'Request timed out. Please try again.'
@@ -1132,6 +1244,62 @@
       {#if visibleFiles().length === 0}
         <div class="px-3 py-6 text-[11px] font-mono text-center" style="color:#4a4a5e">
           No uploaded files yet
+        </div>
+      {/if}
+
+      <div class="mt-4 mb-2">
+        <p class="text-[9px] font-mono tracking-[2px] uppercase px-1" style="color:#4a4a5e">Extraction History (30d)</p>
+      </div>
+      <div class="px-1 mb-2">
+        <div class="flex items-center gap-2 px-2.5 py-2 rounded-lg" style="background:#18181e; border:1px solid #ffffff0d">
+          <svg class="w-3 h-3 shrink-0" style="color:#4a4a5e" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+          <input
+            value={extractionQuery}
+            oninput={handleExtractionSearchInput}
+            type="text"
+            placeholder="Search extractions"
+            class="bg-transparent text-[11px] font-mono text-white placeholder-muted w-full focus:ring-0"
+            style="color:white"
+          />
+        </div>
+      </div>
+
+      {#if isLoadingExtractions}
+        <div class="px-3 py-3 text-[10px] font-mono" style="color:#4a4a5e">Loading extraction history...</div>
+      {:else if extractionError}
+        <div class="px-3 py-3 text-[10px] font-mono" style="color:#ff8787">{extractionError}</div>
+      {:else if extractionHistory.length === 0}
+        <div class="px-3 py-3 text-[10px] font-mono" style="color:#4a4a5e">No extractions found in the last 30 days.</div>
+      {:else}
+        <div class="flex flex-col gap-2 px-1">
+          {#each extractionHistory as extraction (extraction.id)}
+            <div class="rounded-lg p-2.5" style="background:#111116; border:1px solid #ffffff0d">
+              <div class="flex items-center justify-between gap-2 mb-1.5">
+                <p class="text-[11px] font-medium truncate" style="color:rgba(255,255,255,0.85)">{extraction.file_name}</p>
+                <span class="text-[9px] font-mono shrink-0" style="color:#4a4a5e">{formatRelativeTime(extraction.created_at)}</span>
+              </div>
+              <p class="text-[10px] leading-snug mb-1" style="color:#8b90a5">Prompt: {shorten(extraction.prompt, 92)}</p>
+              <p class="text-[10px] leading-snug mb-2" style="color:#4a4a5e">Result: {shorten(extraction.result, 98)}</p>
+              <div class="flex items-center gap-2">
+                <button
+                  class="px-2 py-1 rounded text-[9px] font-mono transition-all"
+                  style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
+                  onclick={() => void openExtractionDocument(extraction, false)}
+                >
+                  Open doc
+                </button>
+                <button
+                  class="px-2 py-1 rounded text-[9px] font-mono transition-all"
+                  style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
+                  onclick={() => void openExtractionDocument(extraction, true)}
+                >
+                  Re-run prompt
+                </button>
+              </div>
+            </div>
+          {/each}
         </div>
       {/if}
 

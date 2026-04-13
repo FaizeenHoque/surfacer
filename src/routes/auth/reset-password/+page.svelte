@@ -5,36 +5,15 @@
   let error = $state('');
   let loading = $state(false);
   let message = $state('');
-  let showCreateAccount = $state(false);
 
   async function handleResetPassword() {
     error = '';
     message = '';
-    showCreateAccount = false;
     loading = true;
 
     try {
-      const existsResponse = await fetch('/api/auth/email-exists', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email }),
-      });
-
-      const existsPayload = await existsResponse.json();
-      if (!existsResponse.ok) {
-        throw new Error(existsPayload.error || 'Unable to verify email');
-      }
-
-      if (!existsPayload.exists) {
-        showCreateAccount = true;
-        error = 'No account found for this email. Please create a new account.';
-        return;
-      }
-
       await authStore.resetPassword(email);
-      message = 'Check your email for password reset instructions';
+      message = 'If an account exists for this email, reset instructions have been sent.';
       email = '';
     } catch (err: unknown) {
       error = err instanceof Error ? err.message : 'Failed to send reset email';
@@ -87,18 +66,6 @@
         <div class="p-2.5 rounded-lg text-sm" style="background:#991b1b26; border:1px solid #7f1d1d80; color:#fca5a5">
           {error}
         </div>
-      {/if}
-
-      {#if showCreateAccount}
-        <button
-          onclick={() => (window.location.href = '/auth/signup')}
-          class="w-full py-2.5 rounded-lg text-sm font-medium transition-all text-center"
-          style="border:1px solid #00e5a026; color:#00e5a0"
-          onmouseenter={e => (e.currentTarget as HTMLElement).style.backgroundColor = '#00e5a014'}
-          onmouseleave={e => (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'}
-        >
-          Create new account
-        </button>
       {/if}
 
       <!-- Success Message -->

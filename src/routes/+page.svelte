@@ -7,6 +7,7 @@
 
   // ── State ──────────────────────────────────────────────────────────────────
   let sidebarOpen = $state(true);
+  let isMobile = $state(false);
   let activeFilePath = $state<string | null>(null);
   let activeFileName = $state<string | null>(null);
   let promptValue = $state('');
@@ -41,23 +42,42 @@
   let templates = $state<string[]>([]);
 
   // ── Init ────────────────────────────────────────────────────────────────────
-  onMount(async () => {
-    const user = await authStore.checkUser();
-    if (user) {
-      currentUser = {
-        id: user.id,
-        email: user.email || '',
-      };
-      try {
-        const profile = await authStore.bootstrapCredits();
-        credits = profile.credits;
-      } catch (err: unknown) {
-        console.error('Failed to load credits:', err);
+  onMount(() => {
+    const viewport = window.matchMedia('(max-width: 1023px)');
+    const syncViewport = () => {
+      isMobile = viewport.matches;
+      if (isMobile) {
+        sidebarOpen = false;
       }
-      await loadFiles();
-    } else {
-      goto('/auth');
-    }
+    };
+
+    syncViewport();
+    viewport.addEventListener('change', syncViewport);
+
+    const init = async () => {
+      const user = await authStore.checkUser();
+      if (user) {
+        currentUser = {
+          id: user.id,
+          email: user.email || '',
+        };
+        try {
+          const profile = await authStore.bootstrapCredits();
+          credits = profile.credits;
+        } catch (err: unknown) {
+          console.error('Failed to load credits:', err);
+        }
+        await loadFiles();
+      } else {
+        goto('/auth');
+      }
+    };
+
+    void init();
+
+    return () => {
+      viewport.removeEventListener('change', syncViewport);
+    };
   });
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -359,6 +379,9 @@
     isLoadingChat = true;
     try {
       await loadChatHistory(file.path, file.name);
+      if (isMobile) {
+        sidebarOpen = false;
+      }
       scrollToBottom();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load chat history';
@@ -584,11 +607,22 @@
 </script>
 
 <!-- ════════════════════════════ ROOT ════════════════════════════ -->
-<div class="grain h-screen flex overflow-hidden font-sans text-white" style="background:#09090d">
+<div class="grain app-shell min-h-dvh h-dvh flex overflow-hidden font-sans text-white" style="background:#09090d">
+
+  {#if isMobile && sidebarOpen}
+    <button
+      class="sidebar-backdrop"
+      aria-label="Close sidebar"
+      onclick={() => {
+        sidebarOpen = false;
+      }}
+    ></button>
+  {/if}
 
   <!-- ═══ SIDEBAR ═══ -->
   <aside
-    class="shrink-0 flex flex-col border-r h-full overflow-hidden transition-all duration-300"
+    class="app-sidebar shrink-0 flex flex-col border-r h-full overflow-hidden transition-all duration-300"
+    class:sidebar-open={sidebarOpen}
     style="width:{sidebarOpen ? '256px' : '0px'}; opacity:{sidebarOpen ? 1 : 0}; background:#111116; border-color:#ffffff0d"
   >
     <!-- Logo -->
@@ -737,10 +771,10 @@
   </aside>
 
   <!-- ═══ MAIN ═══ -->
-  <main class="flex-1 flex flex-col h-full min-w-0" style="background:#09090d">
+  <main class="app-main flex-1 flex flex-col h-full min-w-0" style="background:#09090d">
 
     <!-- Header -->
-    <header class="shrink-0 flex items-center justify-between px-6 py-3.5 backdrop-blur-sm" style="border-bottom:1px solid #ffffff0d; background:rgba(17,17,22,0.6)">
+    <header class="app-header shrink-0 flex items-center justify-between px-6 py-3.5 backdrop-blur-sm" style="border-bottom:1px solid #ffffff0d; background:rgba(17,17,22,0.6)">
       <div class="flex items-center gap-3">
         {#if !sidebarOpen}
           <button onclick={() => sidebarOpen = true} title="Toggle sidebar" class="p-1.5 rounded-lg transition-all" style="color:#4a4a5e">
@@ -758,14 +792,14 @@
       </div>
 
       <div class="flex items-center gap-3">
-        <div class="px-3 py-1.5 rounded-lg text-xs font-mono" style="background:#18181e; border:1px solid #ffffff0d; color:#4a4a5e">
+        <div class="desktop-only px-3 py-1.5 rounded-lg text-xs font-mono" style="background:#18181e; border:1px solid #ffffff0d; color:#4a4a5e">
           Model: minimax/minimax-m2.5:free
         </div>
         {#each [
           { title: 'Share', path: 'M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z' },
           { title: 'Download', path: 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4' },
         ] as btn (btn)}
-          <button title={btn.title} class="p-2 rounded-lg transition-all" style="color:#4a4a5e">
+          <button title={btn.title} class="desktop-only p-2 rounded-lg transition-all" style="color:#4a4a5e">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
               <path stroke-linecap="round" stroke-linejoin="round" d={btn.path}/>
             </svg>
@@ -780,7 +814,7 @@
     </header>
 
     <!-- Messages -->
-    <div bind:this={messagesEl} class="flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-5">
+    <div bind:this={messagesEl} class="messages-wrap flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-5">
       {#each messages as msg (msg)}
         {#if msg.type === 'system'}
           <div class="flex justify-center">
@@ -832,7 +866,7 @@
                 <span class="text-[10px] font-mono" style="color:#4a4a5e">{msg.timestamp}</span>
                 <span class="text-xs font-semibold" style="color:rgba(255,255,255,0.7)">You</span>
               </div>
-              <div class="rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed max-w-sm" style="background:#18181e; border:1px solid #ffffff0d; color:rgba(255,255,255,0.8)">
+              <div class="user-bubble rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed max-w-sm" style="background:#18181e; border:1px solid #ffffff0d; color:rgba(255,255,255,0.8)">
                 {msg.content}
               </div>
             </div>
@@ -860,7 +894,7 @@
     <!-- Chips (empty - will be populated with project templates) -->
 
     <!-- Input -->
-    <div class="shrink-0 px-6 pb-5">
+    <div class="input-wrap shrink-0 px-6 pb-5">
       <div class="input-box flex items-end gap-3 px-4 py-3 rounded-2xl transition-all" style="background:#111116; border:1px solid #ffffff0d">
         <button title="Attach file" onclick={openUploadPicker} class="shrink-0 p-1.5 rounded-lg transition-all mb-0.5" style="color:#4a4a5e">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
@@ -979,6 +1013,92 @@
   .chip:hover { border-color: #00e5a026 !important; color: #00e5a0 !important; background: #00e5a014 !important; }
   .action-btn:hover { color: white !important; background: #18181e !important; border-color: #ffffff0d !important; }
   .input-box:focus-within { border-color: #ffffff16 !important; }
+
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    border: none;
+    z-index: 35;
+  }
+
+  @media (max-width: 1023px) {
+    .app-shell {
+      min-height: 100dvh;
+      height: 100dvh;
+      position: relative;
+    }
+
+    .app-sidebar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      z-index: 40;
+      width: min(84vw, 320px) !important;
+      max-width: 320px;
+      transform: translateX(-105%);
+      opacity: 1 !important;
+      pointer-events: none;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    }
+
+    .app-sidebar.sidebar-open {
+      transform: translateX(0);
+      pointer-events: auto;
+    }
+
+    .app-main {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .app-header {
+      padding: 0.7rem 0.9rem;
+      gap: 0.55rem;
+    }
+
+    .messages-wrap {
+      padding: 0.9rem 0.8rem;
+      gap: 0.9rem;
+    }
+
+    .msg {
+      max-width: 100%;
+    }
+
+    .user-bubble {
+      max-width: min(88vw, 34rem);
+    }
+
+    .input-wrap {
+      padding: 0 0.8rem 0.75rem;
+    }
+
+    .input-box {
+      border-radius: 1rem;
+      padding: 0.55rem 0.65rem;
+      gap: 0.55rem;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .desktop-only {
+      display: none !important;
+    }
+
+    :global(.ai-content table) {
+      display: block;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      white-space: nowrap;
+    }
+
+    :global(.ai-content pre),
+    :global(.ai-content .math-block) {
+      padding: 0.7rem 0.75rem;
+    }
+  }
 
   @keyframes fadeUp {
     0%   { opacity: 0; transform: translateY(8px); }

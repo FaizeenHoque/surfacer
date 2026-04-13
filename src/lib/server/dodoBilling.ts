@@ -15,6 +15,8 @@ type BasicSubscription = {
   };
 };
 
+export type UserSubscription = BasicSubscription;
+
 type BasicPayment = {
   metadata?: Record<string, unknown>;
   customer?: {
@@ -27,6 +29,11 @@ const ACTIVE_STATUSES: Array<BasicSubscription['status']> = ['active', 'pending'
 
 function isActiveLike(subscription: BasicSubscription) {
   return ACTIVE_STATUSES.includes(subscription.status);
+}
+
+export function isSubscriptionActiveLike(subscription: Pick<BasicSubscription, 'status'> | null | undefined) {
+  if (!subscription) return false;
+  return ACTIVE_STATUSES.includes(subscription.status as BasicSubscription['status']);
 }
 
 export function createDodoClient() {
@@ -179,4 +186,16 @@ export async function findActiveSubscriptionForUser(client: DodoPayments, appUse
   }
 
   return null;
+}
+
+export async function getSubscriptionById(client: DodoPayments, subscriptionId: string) {
+  const id = subscriptionId.trim();
+  if (!id) return null;
+
+  try {
+    const subscription = await client.subscriptions.retrieve(id);
+    return subscription as BasicSubscription;
+  } catch {
+    return null;
+  }
 }

@@ -1,7 +1,18 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createAuthedSupabase, getUserFromToken } from '$lib/server/chats';
-import { createDodoClient, findActiveSubscriptionForUser } from '$lib/server/dodoBilling';
+import {
+  clearUserSubscriptionTracking,
+  createAuthedSupabase,
+  getUserFromToken,
+  getUserSubscriptionTracking,
+  setUserSubscriptionTracking,
+} from '$lib/server/chats';
+import {
+  createDodoClient,
+  findActiveSubscriptionForUser,
+  getSubscriptionById,
+  isSubscriptionActiveLike,
+} from '$lib/server/dodoBilling';
 
 export const POST: RequestHandler = async ({ request }) => {
   try {
@@ -16,9 +27,25 @@ export const POST: RequestHandler = async ({ request }) => {
     const user = await getUserFromToken(supabase, token);
 
     const dodo = createDodoClient();
-    const subscription = await findActiveSubscriptionForUser(dodo, user.id, user.email || '');
+    const tracked = await getUserSubscriptionTracking(supabase, user.id);
+    let subscription = tracked?.subscriptionId
+      ? await getSubscriptionById(dodo, tracked.subscriptionId)
+      : null;
 
-    if (!subscription?.subscription_id) {
+    if (subscription && !isSubscriptionActiveLike(subscription)) {
+      await clearUserSubscriptionTracking(supabase, user.id);
+      subscription = null;
+    }
+
+    if (!subscription) {
+      subscription = await findActiveSubscriptionForUser(dodo, user.id, user.email || '');
+
+      if (subscription?.subscription_id) {
+        await setUserSubscriptionTracking(supabase, user.id, subscription.subscription_id, subscription.status);
+      }
+    }
+
+    if (!subscription?.subscription_id || !isSubscriptionActiveLike(subscription)) {
       return json({ error: 'No active subscription found.' }, { status: 404 });
     }
 
@@ -30,6 +57,8 @@ export const POST: RequestHandler = async ({ request }) => {
       cancel_at_next_billing_date: true,
       cancel_reason: 'cancelled_by_customer',
     });
+
+    await setUserSubscriptionTracking(supabase, user.id, subscription.subscription_id, subscription.status);
 
     return json({ ok: true, cancelScheduled: true });
   } catch (err: unknown) {

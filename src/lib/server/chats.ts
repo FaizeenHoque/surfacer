@@ -159,3 +159,72 @@ export async function setUserCredits(supabase: SupabaseClient, userId: string, c
 
   return nextCredits;
 }
+
+export type UserSubscriptionTracking = {
+  subscriptionId: string;
+  subscriptionStatus: string;
+};
+
+export async function getUserSubscriptionTracking(supabase: SupabaseClient, userId: string) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('subscription_id, subscription_status')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  const subscriptionId = typeof data.subscription_id === 'string' ? data.subscription_id.trim() : '';
+  const subscriptionStatus = typeof data.subscription_status === 'string' ? data.subscription_status.trim() : '';
+
+  if (!subscriptionId) {
+    return null;
+  }
+
+  return {
+    subscriptionId,
+    subscriptionStatus,
+  } as UserSubscriptionTracking;
+}
+
+export async function setUserSubscriptionTracking(
+  supabase: SupabaseClient,
+  userId: string,
+  subscriptionId: string,
+  subscriptionStatus?: string
+) {
+  const nextSubscriptionId = subscriptionId.trim();
+  const nextSubscriptionStatus = (subscriptionStatus || '').trim();
+
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      subscription_id: nextSubscriptionId || null,
+      subscription_status: nextSubscriptionStatus || null,
+    })
+    .eq('id', userId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function clearUserSubscriptionTracking(supabase: SupabaseClient, userId: string) {
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      subscription_id: null,
+      subscription_status: null,
+    })
+    .eq('id', userId);
+
+  if (error) {
+    throw error;
+  }
+}

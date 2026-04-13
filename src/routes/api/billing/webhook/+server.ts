@@ -67,6 +67,18 @@ function getRecord(value: unknown) {
   return value as Record<string, unknown>;
 }
 
+function normalizeSubscriptionStatus(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function extractSubscriptionIdFromPayment(payment: Record<string, unknown>) {
+  const direct = getString(payment, 'subscription_id');
+  if (direct) return direct;
+
+  const subscription = getRecord(payment.subscription);
+  return getString(subscription, 'subscription_id');
+}
+
 async function resolveUserIdFromCustomer(
   dodo: DodoPayments,
   customerId: string
@@ -105,6 +117,48 @@ async function addCreditsToUser(userId: string, creditsToAdd: number) {
   const updateResult = await supabase
     .from('profiles')
     .update({ credits: nextCredits })
+    .eq('id', userId);
+
+  if (updateResult.error) {
+    throw new Error(updateResult.error.message);
+  }
+}
+
+async function setUserSubscriptionTracking(userId: string, subscriptionId: string, subscriptionStatus?: string) {
+  const key = env.SUPABASE_SERVICE_ROLE_KEY || '';
+  if (!key) {
+    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY for webhook subscription tracking');
+  }
+
+  const supabase = createClient(PUBLIC_SUPABASE_URL, key);
+  const nextStatus = subscriptionStatus ? normalizeSubscriptionStatus(subscriptionStatus) : null;
+
+  const updateResult = await supabase
+    .from('profiles')
+    .update({
+      subscription_id: subscriptionId || null,
+      subscription_status: nextStatus,
+    })
+    .eq('id', userId);
+
+  if (updateResult.error) {
+    throw new Error(updateResult.error.message);
+  }
+}
+
+async function clearUserSubscriptionTracking(userId: string) {
+  const key = env.SUPABASE_SERVICE_ROLE_KEY || '';
+  if (!key) {
+    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY for webhook subscription tracking');
+  }
+
+  const supabase = createClient(PUBLIC_SUPABASE_URL, key);
+  const updateResult = await supabase
+    .from('profiles')
+    .update({
+      subscription_id: null,
+      subscription_status: null,
+    })
     .eq('id', userId);
 
   if (updateResult.error) {
@@ -189,6 +243,11 @@ export const POST: RequestHandler = async ({ request }) => {
 
       await addCreditsToUser(userId, creditsToAdd);
 
+      const subscriptionId = extractSubscriptionIdFromPayment(payment);
+      if (subscriptionId) {
+        await setUserSubscriptionTracking(userId, subscriptionId, 'active');
+      }
+
       if (webhookId) {
         markProcessed(processedWebhookIds, webhookId, now);
       }
@@ -242,11 +301,51 @@ export const POST: RequestHandler = async ({ request }) => {
 
       await addCreditsToUser(userId, creditsToAdd);
 
+      if (subscriptionId) {
+        const status = getString(subscription, 'status') || 'active';
+        await setUserSubscriptionTracking(userId, subscriptionId, status);
+      }
+
       if (webhookId) {
         markProcessed(processedWebhookIds, webhookId, now);
       }
       if (cycleKey) {
         markProcessed(processedSubscriptionRenewalIds, cycleKey, now);
+      }
+
+      return json({ ok: true });
+    }
+
+    if (event.type.startsWith('subscription.')) {
+      const subscription = event.data as unknown as Record<string, unknown>;
+      const metadata = getRecord(subscription.metadata);
+      const customer = getRecord(subscription.customer);
+      const customerMetadata = getRecord(customer.metadata);
+
+      let userId =
+        getString(metadata, 'app_user_id') ||
+        getString(customerMetadata, 'app_user_id');
+
+      if (!userId) {
+        const customerId = getString(customer, 'customer_id');
+        userId = await resolveUserIdFromCustomer(dodo, customerId);
+      }
+
+      const subscriptionId = getString(subscription, 'subscription_id');
+      const status = normalizeSubscriptionStatus(getString(subscription, 'status'));
+
+      if (userId && subscriptionId) {
+        if (status === 'active' || status === 'pending' || status === 'on_hold') {
+          await setUserSubscriptionTracking(userId, subscriptionId, status);
+        }
+
+        if (status === 'cancelled' || status === 'expired' || status === 'failed') {
+          await clearUserSubscriptionTracking(userId);
+        }
+      }
+
+      if (webhookId) {
+        markProcessed(processedWebhookIds, webhookId, now);
       }
 
       return json({ ok: true });

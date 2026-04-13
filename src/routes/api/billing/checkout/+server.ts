@@ -1,9 +1,18 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import DodoPayments from 'dodopayments';
-import { createAuthedSupabase, getUserFromToken } from '$lib/server/chats';
+import {
+  createAuthedSupabase,
+  getUserFromToken,
+  getUserSubscriptionTracking,
+  setUserSubscriptionTracking,
+} from '$lib/server/chats';
 import { findCreditPack, getDodoEnvironment } from '$lib/server/billing';
-import { findActiveSubscriptionForUser } from '$lib/server/dodoBilling';
+import {
+  findActiveSubscriptionForUser,
+  getSubscriptionById,
+  isSubscriptionActiveLike,
+} from '$lib/server/dodoBilling';
 import { env } from '$env/dynamic/private';
 
 export const POST: RequestHandler = async ({ request, url }) => {
@@ -43,8 +52,27 @@ export const POST: RequestHandler = async ({ request, url }) => {
     });
 
     if (selectedPack.interval && selectedPack.interval !== 'one_time') {
-      const existingSubscription = await findActiveSubscriptionForUser(dodo, user.id, user.email || '');
+      const tracked = await getUserSubscriptionTracking(supabase, user.id);
+      let existingSubscription = tracked?.subscriptionId
+        ? await getSubscriptionById(dodo, tracked.subscriptionId)
+        : null;
+
+      if (existingSubscription && !isSubscriptionActiveLike(existingSubscription)) {
+        existingSubscription = null;
+      }
+
+      if (!existingSubscription) {
+        existingSubscription = await findActiveSubscriptionForUser(dodo, user.id, user.email || '');
+      }
+
       if (existingSubscription) {
+        await setUserSubscriptionTracking(
+          supabase,
+          user.id,
+          existingSubscription.subscription_id,
+          existingSubscription.status
+        );
+
         return json(
           {
             error:

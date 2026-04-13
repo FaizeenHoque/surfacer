@@ -1,7 +1,18 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createAuthedSupabase, getUserFromToken } from '$lib/server/chats';
-import { createDodoClient, findActiveSubscriptionForUser } from '$lib/server/dodoBilling';
+import {
+  clearUserSubscriptionTracking,
+  createAuthedSupabase,
+  getUserFromToken,
+  getUserSubscriptionTracking,
+  setUserSubscriptionTracking,
+} from '$lib/server/chats';
+import {
+  createDodoClient,
+  findActiveSubscriptionForUser,
+  getSubscriptionById,
+  isSubscriptionActiveLike,
+} from '$lib/server/dodoBilling';
 
 export const GET: RequestHandler = async ({ request }) => {
   try {
@@ -16,10 +27,27 @@ export const GET: RequestHandler = async ({ request }) => {
     const user = await getUserFromToken(supabase, token);
 
     const dodo = createDodoClient();
-    const subscription = await findActiveSubscriptionForUser(dodo, user.id, user.email || '');
+    const tracked = await getUserSubscriptionTracking(supabase, user.id);
+
+    let subscription = tracked?.subscriptionId
+      ? await getSubscriptionById(dodo, tracked.subscriptionId)
+      : null;
+
+    if (subscription && !isSubscriptionActiveLike(subscription)) {
+      await clearUserSubscriptionTracking(supabase, user.id);
+      subscription = null;
+    }
+
+    if (!subscription) {
+      subscription = await findActiveSubscriptionForUser(dodo, user.id, user.email || '');
+
+      if (subscription?.subscription_id) {
+        await setUserSubscriptionTracking(supabase, user.id, subscription.subscription_id, subscription.status);
+      }
+    }
 
     return json({
-      hasActiveSubscription: Boolean(subscription),
+      hasActiveSubscription: Boolean(subscription && isSubscriptionActiveLike(subscription)),
       subscription: subscription
         ? {
             id: subscription.subscription_id,

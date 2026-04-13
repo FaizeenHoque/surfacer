@@ -86,6 +86,11 @@ type ChatCompletionApiResponse = {
   }>;
 };
 
+type ChatCompletionJsonResponse = ChatCompletionApiResponse & {
+  error?: { message?: string };
+  message?: string;
+};
+
 type ChatDeltaEvent = {
   choices?: Array<{
     delta?: {
@@ -439,6 +444,137 @@ async function createChatCompletion(
   return parseStream();
 }
 
+async function generateFollowUpQuestions(
+  apiKey: string,
+  model: string,
+  context: string,
+  originalQuestion: string,
+  assistantAnswer: string,
+  requestId: string
+) {
+  const response = await fetch(CHAT_COMPLETIONS_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      max_completion_tokens: 180,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Generate exactly 3 short follow-up questions a user would naturally ask next. Use the document context, the user\'s question, and the answer. Return only a JSON array of 3 strings. Do not include numbering, bullets, markdown, code fences, or any extra text.',
+        },
+        {
+          role: 'user',
+          content:
+            `Document context:\n${context}\n\nOriginal question:\n${originalQuestion}\n\nAnswer:\n${assistantAnswer}`,
+        },
+      ],
+    }),
+  });
+
+  const raw = await response.text();
+  const data = parseJsonSafe<ChatCompletionJsonResponse>(raw) || {};
+
+  if (!response.ok) {
+    throw new Error(data.error?.message || data.message || raw || 'Follow-up generation failed');
+  }
+
+  const content = data.choices?.[0]?.message?.content;
+  const text = Array.isArray(content)
+    ? content.map((entry) => (typeof entry === 'string' ? entry : '')).join('')
+    : typeof content === 'string'
+      ? content
+      : '';
+
+  const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const parsed = parseJsonSafe<unknown>(cleaned);
+
+  if (!Array.isArray(parsed)) {
+    debugLog(requestId, 'followup_parse_failed', { rawPreview: clipText(cleaned) });
+    return [];
+  }
+
+  return parsed
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter((entry) => Boolean(entry))
+    .slice(0, 3);
+}
+
+async function finalizeAssistantResponse(options: {
+  supabase: ReturnType<typeof createAuthedSupabase>;
+  apiKey: string;
+  sessionId: string;
+  userId: string;
+  assistantResponse: string;
+  currentCredits: number;
+  responseCost: number;
+  responseModel: string;
+  promptContext: string;
+  originalQuestion: string;
+  isFollowUp: boolean;
+  requestId: string;
+  sendEvent: (payload: Record<string, unknown>) => void;
+}) {
+  const {
+    supabase,
+    apiKey,
+    sessionId,
+    userId,
+    assistantResponse,
+    currentCredits,
+    responseCost,
+    responseModel,
+    promptContext,
+    originalQuestion,
+    isFollowUp,
+    requestId,
+    sendEvent,
+  } = options;
+
+  const trimmedResponse = assistantResponse.trim();
+  if (!trimmedResponse) return currentCredits;
+
+  await appendChatMessage(supabase, sessionId, userId, 'assistant', trimmedResponse);
+  const creditsRemaining = await setUserCredits(supabase, userId, currentCredits - responseCost);
+
+  sendEvent({
+    type: 'usage',
+    creditsUsed: responseCost,
+    creditsRemaining,
+  });
+
+  if (!isFollowUp) {
+    try {
+      const followUps = await generateFollowUpQuestions(
+        apiKey,
+        responseModel,
+        promptContext,
+        originalQuestion,
+        trimmedResponse,
+        requestId
+      );
+
+      if (followUps.length) {
+        sendEvent({
+          type: 'followup_suggestions',
+          suggestions: followUps,
+        });
+      }
+    } catch (err: unknown) {
+      debugLog(requestId, 'followup_generation_failed', {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return creditsRemaining;
+}
+
 function normalizeDeltaText(value: unknown) {
   if (typeof value === 'string') return value;
   if (!Array.isArray(value)) return '';
@@ -737,21 +873,21 @@ export const POST: RequestHandler = async ({ request }) => {
               }
 
               if (assistantResponse.trim()) {
-                await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
                 const responseCost = isFollowUp ? FOLLOW_UP_CREDIT_COST : calculateCreditCost(pageCount, responseModel);
-                const creditsRemaining = await setUserCredits(supabase, user.id, currentCredits - responseCost);
-                sendEvent({
-                  type: 'followup_suggestions',
-                  suggestions: [
-                    'What are the penalties for late payment?',
-                    'Summarise the liability limitations.',
-                    'Are there any auto-renewal clauses?',
-                  ],
-                });
-                sendEvent({
-                  type: 'usage',
-                  creditsUsed: responseCost,
-                  creditsRemaining,
+                await finalizeAssistantResponse({
+                  supabase,
+                  apiKey,
+                  sessionId: session.id,
+                  userId: user.id,
+                  assistantResponse,
+                  currentCredits,
+                  responseCost,
+                  responseModel,
+                  promptContext,
+                  originalQuestion: message,
+                  isFollowUp,
+                  requestId,
+                  sendEvent,
                 });
               }
 
@@ -823,13 +959,21 @@ export const POST: RequestHandler = async ({ request }) => {
               }
 
               if (assistantResponse.trim()) {
-                await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
                 const responseCost = isFollowUp ? FOLLOW_UP_CREDIT_COST : calculateCreditCost(pageCount, responseModel);
-                const creditsRemaining = await setUserCredits(supabase, user.id, currentCredits - responseCost);
-                sendEvent({
-                  type: 'usage',
-                  creditsUsed: responseCost,
-                  creditsRemaining,
+                await finalizeAssistantResponse({
+                  supabase,
+                  apiKey,
+                  sessionId: session.id,
+                  userId: user.id,
+                  assistantResponse,
+                  currentCredits,
+                  responseCost,
+                  responseModel,
+                  promptContext,
+                  originalQuestion: message,
+                  isFollowUp,
+                  requestId,
+                  sendEvent,
                 });
               }
 

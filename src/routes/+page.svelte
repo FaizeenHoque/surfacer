@@ -188,91 +188,6 @@
     return value.toFixed(2).replace(/\.00$/, '');
   }
 
-  function buildFollowUpSuggestions(answerText: string, questionText: string) {
-    const normalized = `${answerText} ${questionText}`.toLowerCase();
-    const questionTerms = questionText.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 3);
-    const suggestions: string[] = [];
-
-    const pushUnique = (question: string) => {
-      if (!suggestions.includes(question)) {
-        suggestions.push(question);
-      }
-    };
-
-    const rules = [
-      {
-        keywords: ['party', 'parties', 'buyer', 'seller', 'tenant', 'landlord', 'client', 'contractor', 'licensee', 'licensor'],
-        questions: [
-          'Who are the contract parties and what are their roles?',
-          'What obligations does each party take on?',
-        ],
-      },
-      {
-        keywords: ['payment', 'fee', 'invoice', 'billing', 'due', 'late', 'overdue', 'price'],
-        questions: [
-          'What are the penalties for late payment?',
-          'When are payments due and how are invoices handled?',
-        ],
-      },
-      {
-        keywords: ['termination', 'terminate', 'renewal', 'renew', 'expiry', 'notice', 'cancel'],
-        questions: [
-          'Are there any auto-renewal clauses?',
-          'What notice is required to terminate the agreement?',
-        ],
-      },
-      {
-        keywords: ['liability', 'indemnity', 'damages', 'warranty', 'responsibility'],
-        questions: [
-          'Summarise the liability limitations.',
-          'Is there an indemnity clause, and who does it protect?',
-        ],
-      },
-      {
-        keywords: ['confidential', 'nda', 'non-disclosure', 'privacy'],
-        questions: [
-          'What confidentiality obligations apply?',
-          'How long do the confidentiality obligations last?',
-        ],
-      },
-      {
-        keywords: ['law', 'jurisdiction', 'venue', 'court', 'dispute'],
-        questions: [
-          'What governing law applies?',
-          'Which court or venue resolves disputes?',
-        ],
-      },
-    ];
-
-    const preferredRules = [...rules].sort((left, right) => {
-      const leftScore = left.keywords.reduce((score, keyword) => score + (questionTerms.includes(keyword) ? 2 : normalized.includes(keyword) ? 1 : 0), 0);
-      const rightScore = right.keywords.reduce((score, keyword) => score + (questionTerms.includes(keyword) ? 2 : normalized.includes(keyword) ? 1 : 0), 0);
-      return rightScore - leftScore;
-    });
-
-    for (const rule of preferredRules) {
-      if (rule.keywords.some((keyword) => normalized.includes(keyword))) {
-        for (const question of rule.questions) {
-          pushUnique(question);
-          if (suggestions.length >= 3) return suggestions.slice(0, 3);
-        }
-      }
-    }
-
-    const fallbackQuestions = [
-      'What are the key obligations in this document?',
-      'Are there any hidden risks or exceptions?',
-      'What deadlines or notice periods should I watch for?',
-    ];
-
-    for (const question of fallbackQuestions) {
-      if (suggestions.length >= 3) break;
-      pushUnique(question);
-    }
-
-    return suggestions.slice(0, 3);
-  }
-
   function selectedPack() {
     return creditPacks.find((pack) => pack.id === selectedPackId) || null;
   }
@@ -870,6 +785,7 @@
             delta?: string;
             creditsUsed?: number;
             creditsRemaining?: number;
+            suggestions?: string[];
           };
           if (payload.type === 'reasoning' && payload.delta) {
             reasoning += payload.delta;
@@ -893,6 +809,20 @@
                 next[aiIndex] = { ...target, creditsUsed: payload.creditsUsed };
                 messages = next;
               }
+            }
+
+            return;
+          }
+
+          if (payload.type === 'followup_suggestions' && Array.isArray(payload.suggestions)) {
+            const next = [...messages];
+            const target = next[aiIndex];
+            if (target && target.type === 'ai') {
+              next[aiIndex] = {
+                ...target,
+                suggestedQuestions: payload.suggestions.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0),
+              };
+              messages = next;
             }
 
             return;
@@ -962,7 +892,6 @@
           content,
           reasoning,
           streaming: false,
-          suggestedQuestions: buildFollowUpSuggestions(content || reasoning || text, text),
         };
         messages = next;
       }

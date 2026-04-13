@@ -33,6 +33,15 @@ export type ExtractionRunRow = {
   created_at: string;
 };
 
+export type ExtractionTemplateRow = {
+  id: string;
+  user_id: string;
+  name: string;
+  fields_csv: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export function createAuthedSupabase(token: string) {
   return createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
     global: {
@@ -204,6 +213,65 @@ export async function listExtractionRuns(
   }
 
   return (data || []) as ExtractionRunRow[];
+}
+
+export async function listExtractionTemplates(supabase: SupabaseClient, userId: string) {
+  const { data, error } = await supabase
+    .from('extraction_templates')
+    .select('id, user_id, name, fields_csv, created_at, updated_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data || []) as ExtractionTemplateRow[];
+}
+
+export async function createExtractionTemplate(
+  supabase: SupabaseClient,
+  input: {
+    userId: string;
+    name: string;
+    fieldsCsv: string;
+  }
+) {
+  const { data, error } = await supabase
+    .from('extraction_templates')
+    .insert({
+      user_id: input.userId,
+      name: input.name.trim(),
+      fields_csv: input.fieldsCsv.trim(),
+    })
+    .select('id, user_id, name, fields_csv, created_at, updated_at')
+    .single();
+
+  if (error || !data) {
+    throw error || new Error('Failed to create extraction template');
+  }
+
+  return data as ExtractionTemplateRow;
+}
+
+export async function deleteExtractionTemplate(
+  supabase: SupabaseClient,
+  input: {
+    userId: string;
+    templateId: string;
+  }
+) {
+  const { error } = await supabase
+    .from('extraction_templates')
+    .delete()
+    .eq('id', input.templateId)
+    .eq('user_id', input.userId);
+
+  if (error) {
+    throw error;
+  }
+
+  return { ok: true };
 }
 
 export async function getUserCredits(supabase: SupabaseClient, userId: string) {

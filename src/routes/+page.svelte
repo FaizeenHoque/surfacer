@@ -61,9 +61,22 @@
     created_at: string;
   };
 
+  type ExtractionTemplate = {
+    id: string;
+    name: string;
+    fields_csv: string;
+    created_at: string;
+  };
+
   // ── Files data ─────────────────────────────────────────────────────────────
   let files = $state<StoredFile[]>([]);
-  let templates = $state<string[]>([]);
+  let templates = $state<ExtractionTemplate[]>([]);
+  let templateName = $state('');
+  let templateFieldsCsv = $state('');
+  let isLoadingTemplates = $state(false);
+  let isCreatingTemplate = $state(false);
+  let deletingTemplateId = $state<string | null>(null);
+  let templateError = $state<string | null>(null);
   let extractionHistory = $state<ExtractionHistoryItem[]>([]);
   let extractionQuery = $state('');
   let isLoadingExtractions = $state(false);
@@ -158,6 +171,7 @@
         }
 
         await loadFiles();
+        await loadTemplates();
         await loadExtractionHistory();
       } else {
         goto('/auth');
@@ -536,6 +550,10 @@
     return `${days}d ago`;
   }
 
+  function buildTemplatePrompt(template: ExtractionTemplate) {
+    return `Extract the following values from the selected document: ${template.fields_csv}. Return concise structured output with one item per field.`;
+  }
+
   async function getAccessToken() {
     const {
       data: { session },
@@ -665,6 +683,144 @@
       extractionHistory = [];
     } finally {
       isLoadingExtractions = false;
+    }
+  }
+
+  async function loadTemplates() {
+    try {
+      templateError = null;
+      isLoadingTemplates = true;
+
+      const token = await getAccessToken();
+      if (!token) {
+        templates = [];
+        return;
+      }
+
+      const response = await fetch('/api/templates', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to load templates');
+      }
+
+      templates = Array.isArray(payload.templates) ? payload.templates : [];
+    } catch (err: unknown) {
+      templateError = err instanceof Error ? err.message : 'Failed to load templates';
+      templates = [];
+    } finally {
+      isLoadingTemplates = false;
+    }
+  }
+
+  async function createTemplate() {
+    if (isCreatingTemplate) return;
+
+    const name = templateName.trim();
+    const values = templateFieldsCsv
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+
+    if (name.length < 2) {
+      templateError = 'Template name must be at least 2 characters.';
+      return;
+    }
+
+    if (!values.length) {
+      templateError = 'Add extraction values separated by commas.';
+      return;
+    }
+
+    try {
+      templateError = null;
+      isCreatingTemplate = true;
+
+      const token = await getAccessToken();
+      if (!token) throw new Error('Session expired');
+
+      const response = await fetch('/api/templates', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name,
+          fieldsCsv: values.join(', '),
+        }),
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to create template');
+      }
+
+      if (payload.template) {
+        templates = [payload.template, ...templates.filter((entry) => entry.id !== payload.template.id)];
+      }
+
+      templateName = '';
+      templateFieldsCsv = '';
+    } catch (err: unknown) {
+      templateError = err instanceof Error ? err.message : 'Failed to create template';
+    } finally {
+      isCreatingTemplate = false;
+    }
+  }
+
+  async function deleteTemplate(templateId: string) {
+    if (deletingTemplateId) return;
+
+    try {
+      deletingTemplateId = templateId;
+      templateError = null;
+
+      const token = await getAccessToken();
+      if (!token) throw new Error('Session expired');
+
+      const response = await fetch(`/api/templates?id=${encodeURIComponent(templateId)}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to delete template');
+      }
+
+      templates = templates.filter((entry) => entry.id !== templateId);
+    } catch (err: unknown) {
+      templateError = err instanceof Error ? err.message : 'Failed to delete template';
+    } finally {
+      deletingTemplateId = null;
+    }
+  }
+
+  async function applyTemplate(template: ExtractionTemplate) {
+    if (!activeFilePath) {
+      messages = [
+        ...messages,
+        {
+          id: makeMessageId('system'),
+          type: 'system',
+          text: 'Select a document first, then apply the template.',
+        },
+      ];
+      return;
+    }
+
+    promptValue = buildTemplatePrompt(template);
+    await tick();
+    if (textareaEl) {
+      autoResize(textareaEl);
+      textareaEl.focus();
     }
   }
 
@@ -1312,14 +1468,61 @@
       <div class="mt-4 mb-2">
         <p class="text-[9px] font-mono tracking-[2px] uppercase px-1" style="color:#4a4a5e">Templates</p>
       </div>
-      {#each templates as tpl (tpl)}
-        <button class="template-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all" style="border:1px solid #ffffff0d">
-          <svg class="w-3.5 h-3.5 shrink-0" style="color:#00e5a0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
-          </svg>
-          <span class="text-xs font-mono transition-colors" style="color:#4a4a5e">{tpl}</span>
+      <div class="flex flex-col gap-2 px-1 mb-2.5">
+        <input
+          class="template-input"
+          placeholder="Template name"
+          bind:value={templateName}
+          maxlength="80"
+        />
+        <input
+          class="template-input"
+          placeholder="Values, separated, by commas"
+          bind:value={templateFieldsCsv}
+          maxlength="1500"
+        />
+        <button
+          class="template-create-btn"
+          type="button"
+          onclick={createTemplate}
+          disabled={isCreatingTemplate}
+        >
+          {isCreatingTemplate ? 'Saving...' : 'Save template'}
         </button>
-      {/each}
+        {#if templateError}
+          <p class="text-[10px] font-mono px-0.5" style="color:#ff8a8a">{templateError}</p>
+        {/if}
+      </div>
+
+      {#if isLoadingTemplates}
+        <div class="text-[10px] font-mono px-2" style="color:#4a4a5e">Loading templates...</div>
+      {:else if templates.length === 0}
+        <div class="text-[10px] font-mono px-2" style="color:#4a4a5e">No templates yet</div>
+      {:else}
+        <div class="flex flex-col gap-2">
+          {#each templates as template (template.id)}
+            <div class="template-item-row px-1">
+              <button class="template-btn w-full flex items-start gap-2.5 px-3 py-2 rounded-lg text-left transition-all" style="border:1px solid #ffffff0d" onclick={() => void applyTemplate(template)}>
+                <svg class="w-3.5 h-3.5 shrink-0 mt-0.5" style="color:#00e5a0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                </svg>
+                <span class="flex flex-col min-w-0 gap-0.5">
+                  <strong class="text-[11px] font-mono truncate" style="color:#d7d7e8">{template.name}</strong>
+                  <span class="text-[10px] font-mono leading-snug truncate" style="color:#4a4a5e">{template.fields_csv}</span>
+                </span>
+              </button>
+              <button
+                class="history-action-btn"
+                type="button"
+                onclick={() => void deleteTemplate(template.id)}
+                disabled={deletingTemplateId === template.id}
+              >
+                {deletingTemplateId === template.id ? '...' : 'Delete'}
+              </button>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     <!-- Footer -->
@@ -1766,8 +1969,51 @@
     background-size: 12px;
   }
   .upload-btn:hover { border-color: #00e5a026 !important; color: #00e5a0 !important; background: #00e5a014 !important; }
-  .template-btn:hover span { color: white; }
   .template-btn:hover { background: #18181e; border-color: #ffffff16 !important; }
+  .template-btn:hover strong { color: white !important; }
+  .template-item-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.35rem;
+    align-items: center;
+  }
+  .template-input {
+    width: 100%;
+    border-radius: 0.45rem;
+    border: 1px solid #ffffff12;
+    background: #14141b;
+    color: #d5d5e3;
+    padding: 0.46rem 0.58rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem;
+    outline: none;
+  }
+  .template-input::placeholder { color: #505068; }
+  .template-input:focus {
+    border-color: #00e5a030;
+    box-shadow: 0 0 0 1px #00e5a014;
+  }
+  .template-create-btn {
+    width: 100%;
+    border-radius: 0.45rem;
+    border: 1px solid #00e5a026;
+    background: #00e5a014;
+    color: #00e5a0;
+    padding: 0.5rem 0.62rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    transition: all 0.15s ease;
+  }
+  .template-create-btn:hover:not(:disabled) {
+    background: #00e5a024;
+    border-color: #00e5a03d;
+  }
+  .template-create-btn:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+  }
   .chip:hover { border-color: #00e5a026 !important; color: #00e5a0 !important; background: #00e5a014 !important; }
   .action-btn:hover { color: white !important; background: #18181e !important; border-color: #ffffff0d !important; }
   .input-box:focus-within { border-color: #ffffff16 !important; }

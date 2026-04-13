@@ -15,6 +15,14 @@ type BasicSubscription = {
   };
 };
 
+type BasicPayment = {
+  metadata?: Record<string, unknown>;
+  customer?: {
+    customer_id?: string;
+    email?: string;
+  };
+};
+
 const ACTIVE_STATUSES: Array<BasicSubscription['status']> = ['active', 'pending', 'on_hold'];
 
 function isActiveLike(subscription: BasicSubscription) {
@@ -43,6 +51,24 @@ function metadataUserId(subscription: BasicSubscription) {
   return typeof userId === 'string' ? userId.trim() : '';
 }
 
+function metadataUserEmail(subscription: BasicSubscription) {
+  const metadata = subscription.metadata || {};
+  const email = metadata.app_user_email;
+  return typeof email === 'string' ? normalizeEmail(email) : '';
+}
+
+function paymentMetadataUserId(payment: BasicPayment) {
+  const metadata = payment.metadata || {};
+  const userId = metadata.app_user_id;
+  return typeof userId === 'string' ? userId.trim() : '';
+}
+
+function paymentMetadataUserEmail(payment: BasicPayment) {
+  const metadata = payment.metadata || {};
+  const email = metadata.app_user_email;
+  return typeof email === 'string' ? normalizeEmail(email) : '';
+}
+
 export async function findCustomerIdByEmail(client: DodoPayments, email: string) {
   const target = normalizeEmail(email);
   if (!target) return '';
@@ -64,10 +90,43 @@ export async function findCustomerIdByEmail(client: DodoPayments, email: string)
   return '';
 }
 
+export async function findCustomerIdByUserIdentity(client: DodoPayments, appUserId: string, email: string) {
+  const normalizedEmail = normalizeEmail(email);
+
+  const byEmail = await findCustomerIdByEmail(client, normalizedEmail);
+  if (byEmail) return byEmail;
+
+  const first = await client.payments.list({ page_number: 1, page_size: 50 });
+  const pages = [first];
+
+  while (pages[pages.length - 1].hasNextPage() && pages.length < 20) {
+    pages.push(await pages[pages.length - 1].getNextPage());
+  }
+
+  for (const page of pages) {
+    const hit = (page.items as unknown as BasicPayment[]).find((payment) => {
+      const byId = appUserId && paymentMetadataUserId(payment) === appUserId;
+      if (byId) return true;
+
+      const byMetaEmail = normalizedEmail && paymentMetadataUserEmail(payment) === normalizedEmail;
+      if (byMetaEmail) return true;
+
+      const byCustomerEmail = normalizedEmail && normalizeEmail(payment.customer?.email) === normalizedEmail;
+      return byCustomerEmail;
+    });
+
+    if (hit?.customer?.customer_id) {
+      return hit.customer.customer_id;
+    }
+  }
+
+  return '';
+}
+
 export async function findActiveSubscriptionForUser(client: DodoPayments, appUserId: string, email: string) {
   const normalizedEmail = normalizeEmail(email);
 
-  const customerId = await findCustomerIdByEmail(client, normalizedEmail);
+  const customerId = await findCustomerIdByUserIdentity(client, appUserId, normalizedEmail);
   if (customerId) {
     const first = await client.subscriptions.list({
       customer_id: customerId,
@@ -88,25 +147,34 @@ export async function findActiveSubscriptionForUser(client: DodoPayments, appUse
     }
   }
 
-  for (const status of ACTIVE_STATUSES) {
-    const first = await client.subscriptions.list({ status, page_number: 1, page_size: 50 });
-    const pages = [first];
+  const first = await client.subscriptions.list({ page_number: 1, page_size: 50 });
+  const pages = [first];
 
-    while (pages[pages.length - 1].hasNextPage() && pages.length < 6) {
-      pages.push(await pages[pages.length - 1].getNextPage());
-    }
+  while (pages[pages.length - 1].hasNextPage() && pages.length < 20) {
+    pages.push(await pages[pages.length - 1].getNextPage());
+  }
 
-    for (const page of pages) {
-      const hit = page.items.find((sub) => {
-        const subEmail = normalizeEmail(sub.customer?.email);
-        if (subEmail && normalizedEmail && subEmail === normalizedEmail) return true;
-        if (appUserId && metadataUserId(sub as BasicSubscription) === appUserId) return true;
-        return false;
-      });
+  for (const page of pages) {
+    const hit = page.items.find((sub) => {
+      const subData = sub as BasicSubscription;
+      if (!isActiveLike(subData)) return false;
 
-      if (hit?.subscription_id) {
-        return hit as BasicSubscription;
-      }
+      const byCustomerId = customerId && subData.customer?.customer_id === customerId;
+      if (byCustomerId) return true;
+
+      const subEmail = normalizeEmail(subData.customer?.email);
+      if (subEmail && normalizedEmail && subEmail === normalizedEmail) return true;
+
+      if (appUserId && metadataUserId(subData) === appUserId) return true;
+
+      const metaEmail = metadataUserEmail(subData);
+      if (normalizedEmail && metaEmail === normalizedEmail) return true;
+
+      return false;
+    });
+
+    if (hit?.subscription_id) {
+      return hit as BasicSubscription;
     }
   }
 

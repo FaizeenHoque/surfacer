@@ -1,9 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import DodoPayments from 'dodopayments';
 import { createAuthedSupabase, getUserFromToken } from '$lib/server/chats';
-import { getDodoEnvironment } from '$lib/server/billing';
-import { env } from '$env/dynamic/private';
+import { createDodoClient, findActiveSubscriptionForUser, findCustomerIdByEmail } from '$lib/server/dodoBilling';
 
 export const POST: RequestHandler = async ({ request, url }) => {
   try {
@@ -14,34 +12,28 @@ export const POST: RequestHandler = async ({ request, url }) => {
       return json({ error: 'Missing auth token' }, { status: 401 });
     }
 
-    const apiKey = env.DODO_PAYMENTS_API_KEY || '';
-    if (!apiKey) {
-      return json({ error: 'Missing DODO_PAYMENTS_API_KEY' }, { status: 500 });
-    }
-
     const supabase = createAuthedSupabase(token);
     const user = await getUserFromToken(supabase, token);
     if (!user.email) {
       return json({ error: 'User email is required to manage subscription' }, { status: 400 });
     }
 
-    const dodo = new DodoPayments({
-      bearerToken: apiKey,
-      environment: getDodoEnvironment(),
-    });
+    const dodo = createDodoClient();
 
-    const customersPage = await dodo.customers.list({
-      email: user.email,
-      page_number: 1,
-      page_size: 1,
-    });
-
-    const customer = customersPage.items?.[0];
-    if (!customer) {
-      return json({ error: 'No billing customer found yet. Complete one checkout first.' }, { status: 404 });
+    let customerId = await findCustomerIdByEmail(dodo, user.email || '');
+    if (!customerId) {
+      const activeSubscription = await findActiveSubscriptionForUser(dodo, user.id, user.email || '');
+      customerId = activeSubscription?.customer?.customer_id || '';
     }
 
-    const portal = await dodo.customers.customerPortal.create(customer.customer_id, {
+    if (!customerId) {
+      return json(
+        { error: 'No billing customer found yet. Complete a paid checkout with this account first.' },
+        { status: 404 }
+      );
+    }
+
+    const portal = await dodo.customers.customerPortal.create(customerId, {
       return_url: `${url.origin}/?billing=portal`,
     });
 

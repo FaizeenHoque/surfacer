@@ -21,11 +21,9 @@ const ALLOWED_MODELS = new Set([
   'deepseek/DeepSeek-V3-0324',
 ]);
 const FILE_TEXT_CACHE = new Map<string, { text: string; pageCount: number; updatedAt: number }>();
-const FILE_EMBEDDINGS_CACHE = new Map<string, { chunks: string[]; vectors: number[][]; updatedAt: number }>();
 const MAX_CACHE_ENTRIES = 20;
 const MAX_CONTEXT_MESSAGES = 16;
-const EMBEDDING_MODEL = 'nvidia/llama-nemotron-embed-vl-1b-v2:free';
-const EMBEDDING_API_URL = 'https://openrouter.ai/api/v1/embeddings';
+
 const CHAT_COMPLETIONS_URL = 'https://models.github.ai/inference/chat/completions';
 const BASIC_MODEL = 'microsoft/Phi-4';
 const PREMIUM_MODEL = 'deepseek/DeepSeek-V3-0324';
@@ -75,9 +73,7 @@ type RateLimitLease = {
 
 const CHAT_RATE_LIMITS = new Map<string, RateLimitState>();
 
-type EmbeddingApiResponse = {
-  data?: Array<{ embedding?: number[] }>;
-};
+
 
 type ChatCompletionApiResponse = {
   choices?: Array<{
@@ -198,121 +194,13 @@ function setCachedFileText(filePath: string, text: string, pageCount: number) {
   if (oldest) FILE_TEXT_CACHE.delete(oldest[0]);
 }
 
-function setCachedFileEmbeddings(filePath: string, chunks: string[], vectors: number[][]) {
-  FILE_EMBEDDINGS_CACHE.set(filePath, { chunks, vectors, updatedAt: Date.now() });
-  if (FILE_EMBEDDINGS_CACHE.size <= MAX_CACHE_ENTRIES) return;
 
-  const entries = [...FILE_EMBEDDINGS_CACHE.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt);
-  const [oldest] = entries;
-  if (oldest) FILE_EMBEDDINGS_CACHE.delete(oldest[0]);
-}
 
-function chunkText(fileText: string, chunkSize = 1200) {
-  const chunks: string[] = [];
-  for (let index = 0; index < fileText.length; index += chunkSize) {
-    chunks.push(fileText.slice(index, index + chunkSize));
-  }
-  return chunks;
-}
 
-function cosineSimilarity(a: number[], b: number[]) {
-  if (!a.length || a.length !== b.length) return 0;
 
-  let dot = 0;
-  let magA = 0;
-  let magB = 0;
 
-  for (let index = 0; index < a.length; index += 1) {
-    const av = a[index];
-    const bv = b[index];
-    dot += av * bv;
-    magA += av * av;
-    magB += bv * bv;
-  }
 
-  if (!magA || !magB) return 0;
-  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
-}
 
-async function embedInputs(
-  apiKey: string,
-  inputs: string[],
-  referer: string,
-  title: string
-): Promise<number[][]> {
-  const response = await fetch(EMBEDDING_API_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': referer,
-      'X-OpenRouter-Title': title,
-    },
-    body: JSON.stringify({
-      model: EMBEDDING_MODEL,
-      input: inputs,
-      encoding_format: 'float',
-    }),
-  });
-
-  const raw = await response.text();
-  const data = parseJsonSafe<EmbeddingApiResponse & { error?: { message?: string }; message?: string }>(raw) || {};
-
-  if (!response.ok) {
-    throw new Error(data.error?.message || data.message || raw || 'Embedding request failed');
-  }
-
-  return (data.data || []).map((entry) => (Array.isArray(entry.embedding) ? entry.embedding : []));
-}
-
-async function buildPromptContext(
-  filePath: string,
-  fileText: string,
-  question: string,
-  apiKey: string,
-  referer: string,
-  title: string,
-  maxContextChars: number
-) {
-  if (fileText.length <= maxContextChars) {
-    return fileText;
-  }
-
-  const cached = FILE_EMBEDDINGS_CACHE.get(filePath);
-  const chunks = cached?.chunks || chunkText(fileText, 1200).slice(0, 80);
-  let vectors = cached?.vectors || [];
-
-  if (!vectors.length) {
-    const nextVectors: number[][] = [];
-    const batchSize = 16;
-
-    for (let index = 0; index < chunks.length; index += batchSize) {
-      const batch = chunks.slice(index, index + batchSize);
-      const embedded = await embedInputs(apiKey, batch, referer, title);
-      nextVectors.push(...embedded);
-    }
-
-    vectors = nextVectors;
-    setCachedFileEmbeddings(filePath, chunks, vectors);
-  }
-
-  const [questionVector] = await embedInputs(apiKey, [question], referer, title);
-
-  const ranked = chunks
-    .map((chunk, index) => ({
-      text: chunk,
-      index,
-      score: cosineSimilarity(questionVector || [], vectors[index] || []),
-    }))
-    .sort((a, b) => b.score - a.score || a.index - b.index)
-    .slice(0, 10)
-    .sort((a, b) => a.index - b.index)
-    .map((entry) => entry.text);
-
-  const context = [chunks[0] || '', ...ranked].join('\n\n');
-
-  return context.slice(0, maxContextChars);
-}
 
 async function createChatCompletion(
   apiKey: string,
@@ -360,7 +248,7 @@ async function createChatCompletion(
     debugLog(requestId, 'provider_retry_without_reasoning', {
       status: response.status,
       statusText: response.statusText,
-      providerRequestId: response.headers.get('x-request-id') || response.headers.get('x-openrouter-request-id') || 'n/a',
+      providerRequestId: response.headers.get('x-request-id') || 'n/a',
       bodyPreview: clipText(firstRaw),
     });
 
@@ -372,7 +260,7 @@ async function createChatCompletion(
   if (!response.ok) {
     const raw = await response.text();
     const err = parseJsonSafe<{ error?: { message?: string }; message?: string }>(raw) || {};
-    const providerRequestId = response.headers.get('x-request-id') || response.headers.get('x-openrouter-request-id') || 'n/a';
+    const providerRequestId = response.headers.get('x-request-id') || 'n/a';
     debugLog(requestId, 'provider_error', {
       status: response.status,
       statusText: response.statusText,
@@ -878,7 +766,7 @@ export const POST: RequestHandler = async ({ request }) => {
     }
 
     const maxContextChars = 28000;
-    const promptContext = await buildPromptContext(filePath, fileText, message, apiKey, '', '', maxContextChars);
+    const promptContext = fileText.slice(0, maxContextChars);
     const session = await getOrCreateChatSession(supabase, user.id, filePath, fileName);
     const priorMessages = (await listChatMessages(supabase, session.id)).slice(-MAX_CONTEXT_MESSAGES);
 

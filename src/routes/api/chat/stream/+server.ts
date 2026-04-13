@@ -13,7 +13,7 @@ import {
 
 const ALLOWED_MODELS = new Set([
   'nvidia/nemotron-3-super-120b-a12b:free',
-  'google/gemma-4-31b-it:free',
+  'google/gemma-4-26b-a4b-it:free',
 ]);
 const FILE_TEXT_CACHE = new Map<string, { text: string; updatedAt: number }>();
 const FILE_EMBEDDINGS_CACHE = new Map<string, { chunks: string[]; vectors: number[][]; updatedAt: number }>();
@@ -196,7 +196,7 @@ async function* streamChatCompletions(
     max_tokens: 1024,
   };
 
-  if (model === 'google/gemma-4-31b-it:free') {
+  if (model === 'google/gemma-4-26b-a4b-it:free') {
     body.reasoning = { enabled: true };
   }
 
@@ -214,7 +214,7 @@ async function* streamChatCompletions(
 
   let response = await sendRequest(body);
 
-  if (!response.ok && model === 'google/gemma-4-31b-it:free' && body.reasoning) {
+  if (!response.ok && model === 'google/gemma-4-26b-a4b-it:free' && body.reasoning) {
     const fallbackBody = { ...body };
     delete fallbackBody.reasoning;
     response = await sendRequest(fallbackBody);
@@ -405,6 +405,8 @@ export const POST: RequestHandler = async ({ request }) => {
             const sendEvent = (type: 'content' | 'reasoning' | 'done', delta = '') => {
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type, delta })}\n\n`));
             };
+
+            controller.enqueue(encoder.encode(': stream-open\n\n'));
 
             // Keep proxies from buffering by sending lightweight SSE comments.
             heartbeat = setInterval(() => {

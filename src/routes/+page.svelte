@@ -68,6 +68,37 @@
     syncViewport();
     viewport.addEventListener('change', syncViewport);
 
+    const initialUrl = new URL(window.location.href);
+    const initialBillingStatus = initialUrl.searchParams.get('billing');
+
+    const scrubBillingUrl = () => {
+      const url = new URL(window.location.href);
+      const keysToRemove = [
+        'billing',
+        'subscription_id',
+        'status',
+        'email',
+        'customer_id',
+        'payment_id',
+        'session_id',
+        'checkout_id',
+      ];
+
+      let changed = false;
+      for (const key of keysToRemove) {
+        if (url.searchParams.has(key)) {
+          url.searchParams.delete(key);
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        window.history.replaceState({}, '', url.pathname + url.search);
+      }
+    };
+
+    scrubBillingUrl();
+
     const init = async () => {
       const user = await authStore.checkUser();
       if (user) {
@@ -79,9 +110,7 @@
         await loadCreditPacks();
         await refreshSubscriptionStatus();
 
-        const currentUrl = new URL(window.location.href);
-        const billingStatus = currentUrl.searchParams.get('billing');
-        if (billingStatus === 'success') {
+        if (initialBillingStatus === 'success') {
           const creditsBefore = credits;
           let creditsAfter = creditsBefore;
           for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -103,44 +132,14 @@
             },
           ];
           await refreshSubscriptionStatus();
-          const nextUrl = new URL(window.location.href);
-          nextUrl.searchParams.delete('billing');
-          window.history.replaceState({}, '', nextUrl.toString());
         }
 
-        if (billingStatus === 'cancelled') {
+        if (initialBillingStatus === 'cancelled') {
           messages = [...messages, { id: makeMessageId('system'), type: 'system', text: 'Payment was cancelled.' }];
-          const nextUrl = new URL(window.location.href);
-          nextUrl.searchParams.delete('billing');
-          window.history.replaceState({}, '', nextUrl.toString());
         }
 
-        if (billingStatus === 'portal') {
+        if (initialBillingStatus === 'portal') {
           messages = [...messages, { id: makeMessageId('system'), type: 'system', text: 'Returned from billing portal.' }];
-          const nextUrl = new URL(window.location.href);
-          nextUrl.searchParams.delete('billing');
-          window.history.replaceState({}, '', nextUrl.toString());
-        }
-
-        // Dodo may append subscription/payment details to return URLs. Remove them from browser URL.
-        const sensitiveParams = [
-          'subscription_id',
-          'status',
-          'email',
-          'customer_id',
-          'payment_id',
-          'session_id',
-          'checkout_id',
-        ];
-        let cleaned = false;
-        for (const key of sensitiveParams) {
-          if (currentUrl.searchParams.has(key)) {
-            currentUrl.searchParams.delete(key);
-            cleaned = true;
-          }
-        }
-        if (cleaned) {
-          window.history.replaceState({}, '', currentUrl.toString());
         }
 
         await loadFiles();
@@ -189,8 +188,9 @@
     return value.toFixed(2).replace(/\.00$/, '');
   }
 
-  function buildFollowUpSuggestions(text: string) {
-    const normalized = text.toLowerCase();
+  function buildFollowUpSuggestions(answerText: string, questionText: string) {
+    const normalized = `${answerText} ${questionText}`.toLowerCase();
+    const questionTerms = questionText.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 3);
     const suggestions: string[] = [];
 
     const pushUnique = (question: string) => {
@@ -244,7 +244,13 @@
       },
     ];
 
-    for (const rule of rules) {
+    const preferredRules = [...rules].sort((left, right) => {
+      const leftScore = left.keywords.reduce((score, keyword) => score + (questionTerms.includes(keyword) ? 2 : normalized.includes(keyword) ? 1 : 0), 0);
+      const rightScore = right.keywords.reduce((score, keyword) => score + (questionTerms.includes(keyword) ? 2 : normalized.includes(keyword) ? 1 : 0), 0);
+      return rightScore - leftScore;
+    });
+
+    for (const rule of preferredRules) {
       if (rule.keywords.some((keyword) => normalized.includes(keyword))) {
         for (const question of rule.questions) {
           pushUnique(question);
@@ -956,7 +962,7 @@
           content,
           reasoning,
           streaming: false,
-          suggestedQuestions: buildFollowUpSuggestions(content || reasoning || text),
+          suggestedQuestions: buildFollowUpSuggestions(content || reasoning || text, text),
         };
         messages = next;
       }

@@ -27,7 +27,7 @@
   let textareaEl: HTMLTextAreaElement;
   let fileInputEl: HTMLInputElement;
 
-  const modelOptions = [{ label: 'Nemotron 3 Super (Free)', value: 'nvidia/nemotron-3-super-120b-a12b:free' }];
+  const modelOptions = [{ label: 'Basic', value: 'nvidia/nemotron-3-super-120b-a12b:free' }];
 
   type Message =
     | { id: string; type: 'system'; text: string }

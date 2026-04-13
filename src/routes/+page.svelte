@@ -776,12 +776,15 @@
       }
 
       files = files.filter((entry) => entry.path !== file.path);
+      extractionHistory = extractionHistory.filter((entry) => entry.file_path !== file.path);
       if (activeFilePath === file.path) {
         activeFilePath = null;
         activeFileName = null;
         activeChatId = null;
         messages = [];
       }
+
+      void loadExtractionHistory();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Delete failed';
       messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];

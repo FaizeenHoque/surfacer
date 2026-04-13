@@ -44,6 +44,16 @@ export const POST: RequestHandler = async ({ request }) => {
       return json({ error: error.message }, { status: 500 });
     }
 
+    const { error: extractionDeleteError } = await supabase
+      .from('extraction_runs')
+      .delete()
+      .eq('user_id', user.id)
+      .eq('file_path', filePath);
+
+    if (extractionDeleteError) {
+      return json({ error: extractionDeleteError.message }, { status: 500 });
+    }
+
     return json({ ok: true });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unexpected delete error';

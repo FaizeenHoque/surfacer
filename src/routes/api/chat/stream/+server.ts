@@ -795,9 +795,7 @@ export const POST: RequestHandler = async ({ request }) => {
     if (!fileText) {
       const bucket = env.SUPABASE_STORAGE_BUCKET || 'documents';
       
-      // Recreate Supabase client with fresh auth context for storage download
-      const storageSupa = createAuthedSupabase(headerToken);
-      const { data: blob, error: downloadError } = await storageSupa.storage.from(bucket).download(filePath);
+      const { data: blob, error: downloadError } = await supabase.storage.from(bucket).download(filePath);
 
       if (downloadError || !blob) {
         const errorMsg = downloadError?.message || 'File not found';

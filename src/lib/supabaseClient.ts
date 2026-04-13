@@ -3,7 +3,7 @@ import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_KEY } from '$env/stati
 
 export const supabase = createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_KEY);
 
-console.log('Supabase env loaded:', {
-	url: PUBLIC_SUPABASE_URL,
-	hasKey: Boolean(PUBLIC_SUPABASE_PUBLISHABLE_KEY)
-});
+// console.log('Supabase env loaded:', {
+// 	url: PUBLIC_SUPABASE_URL,
+// 	hasKey: Boolean(PUBLIC_SUPABASE_PUBLISHABLE_KEY)
+// });

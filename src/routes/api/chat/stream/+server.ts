@@ -200,21 +200,30 @@ async function* streamChatCompletions(
     body.reasoning = { enabled: true };
   }
 
-  const response = await fetch(CHAT_COMPLETIONS_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': referer,
-      'X-OpenRouter-Title': appTitle,
-    },
-    body: JSON.stringify(body),
-  });
+  const sendRequest = async (payload: typeof body) =>
+    fetch(CHAT_COMPLETIONS_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': referer,
+        'X-OpenRouter-Title': appTitle,
+      },
+      body: JSON.stringify(payload),
+    });
+
+  let response = await sendRequest(body);
+
+  if (!response.ok && model === 'google/gemma-4-31b-it:free' && body.reasoning) {
+    const fallbackBody = { ...body };
+    delete fallbackBody.reasoning;
+    response = await sendRequest(fallbackBody);
+  }
 
   if (!response.ok) {
     const raw = await response.text();
     const err = parseJsonSafe<{ error?: { message?: string }; message?: string }>(raw) || {};
-    throw new Error(err.error?.message || err.message || raw || 'Provider returned error');
+    throw new Error(err.error?.message || err.message || raw || `Provider returned error (${response.status})`);
   }
 
   if (!response.body) {
@@ -389,12 +398,22 @@ export const POST: RequestHandler = async ({ request }) => {
     return new Response(
       new ReadableStream({
         async start(controller) {
+          let heartbeat: ReturnType<typeof setInterval> | null = null;
           try {
             let assistantResponse = '';
 
             const sendEvent = (type: 'content' | 'reasoning' | 'done', delta = '') => {
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type, delta })}\n\n`));
             };
+
+            // Keep proxies from buffering by sending lightweight SSE comments.
+            heartbeat = setInterval(() => {
+              try {
+                controller.enqueue(encoder.encode(': ping\n\n'));
+              } catch {
+                // Ignore if stream is already closed.
+              }
+            }, 1000);
 
             for await (const event of streamChatCompletions(apiKey, referer, appTitle, model, chatMessages)) {
               const deltaNode = event?.choices?.[0]?.delta;
@@ -421,8 +440,14 @@ export const POST: RequestHandler = async ({ request }) => {
             if (assistantResponse.trim()) {
               await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
             }
+            if (heartbeat) {
+              clearInterval(heartbeat);
+            }
             controller.close();
           } catch (streamErr: unknown) {
+            if (heartbeat) {
+              clearInterval(heartbeat);
+            }
             const streamMessage = streamErr instanceof Error ? streamErr.message : 'Streaming failed';
             controller.error(new Error(streamMessage));
           }

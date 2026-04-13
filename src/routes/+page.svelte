@@ -126,7 +126,13 @@
 
   function formatInline(text: string) {
     const tokens: string[] = [];
-    const withMathTokens = text.replace(/\$([^$\n]+)\$/g, (_, expr: string) => {
+    const withDollarMathTokens = text.replace(/\$([^$\n]+)\$/g, (_, expr: string) => {
+      const token = `MATH_INLINE_TOKEN_${tokens.length}`;
+      tokens.push(renderMathInline(expr.trim()));
+      return token;
+    });
+
+    const withMathTokens = withDollarMathTokens.replace(/\\\((.+?)\\\)/g, (_, expr: string) => {
       const token = `MATH_INLINE_TOKEN_${tokens.length}`;
       tokens.push(renderMathInline(expr.trim()));
       return token;

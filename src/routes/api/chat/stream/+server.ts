@@ -12,8 +12,6 @@ import {
 } from '$lib/server/chats';
 
 const ALLOWED_MODELS = new Set([
-  'minimax/minimax-m2.5:free',
-  'google/gemini-2.0-flash-exp:free',
   'google/gemini-2.5-flash',
   'meta-llama/llama-3.3-70b-instruct:free',
   'nvidia/nemotron-3-super-120b-a12b:free',

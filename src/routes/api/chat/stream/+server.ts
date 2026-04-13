@@ -30,6 +30,43 @@ const DEBUG_CHAT = (env.DEBUG_CHAT || '').toLowerCase() === '1' || (env.DEBUG_CH
 const MAX_CONCURRENT_CHAT_REQUESTS = 1;
 const CHAT_BURST_WINDOW_MS = 15_000;
 const CHAT_BURST_LIMIT = 3;
+const BASIC_MODEL_MULTIPLIER = 1;
+const PREMIUM_MODEL_MULTIPLIER = 10;
+const DEFAULT_CHARS_PER_PAGE = 3000;
+
+function toPositiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+function getCreditBaseCost() {
+  return toPositiveInt(env.CHAT_CREDIT_BASE, 1);
+}
+
+function getCreditPageCost() {
+  return toPositiveInt(env.CHAT_CREDIT_PAGE_COST, 1);
+}
+
+function getCharsPerPage() {
+  return toPositiveInt(env.CHAT_CREDIT_CHARS_PER_PAGE, DEFAULT_CHARS_PER_PAGE);
+}
+
+function estimatePageCount(fileText: string) {
+  const charsPerPage = getCharsPerPage();
+  return Math.max(1, Math.ceil(fileText.length / charsPerPage));
+}
+
+function getModelMultiplier(model: string) {
+  return model === PREMIUM_MODEL ? PREMIUM_MODEL_MULTIPLIER : BASIC_MODEL_MULTIPLIER;
+}
+
+function calculateCreditCost(pageCount: number, model: string) {
+  const base = getCreditBaseCost();
+  const pageCost = getCreditPageCost();
+  const multiplier = getModelMultiplier(model);
+  return base + (pageCount * pageCost) * multiplier;
+}
 
 type RateLimitState = {
   activeCount: number;
@@ -475,11 +512,6 @@ export const POST: RequestHandler = async ({ request }) => {
       return json({ error: 'Message is required' }, { status: 400 });
     }
 
-    const currentCredits = await getUserCredits(supabase, user.id);
-    if (currentCredits <= 0) {
-      return json({ error: 'Not enough credits. Please buy more credits.' }, { status: 402 });
-    }
-
     const rateLimit = acquireChatRateLimit(user.id);
     if (!rateLimit.allowed) {
       return json(
@@ -517,6 +549,21 @@ export const POST: RequestHandler = async ({ request }) => {
       const fileBytes = await blob.arrayBuffer();
       fileText = await extractText(fileName, fileBytes);
       setCachedFileText(filePath, fileText);
+    }
+
+    const pageCount = estimatePageCount(fileText);
+    const estimatedCost = calculateCreditCost(pageCount, model);
+    const currentCredits = await getUserCredits(supabase, user.id);
+
+    if (currentCredits < estimatedCost) {
+      rateLimitLease.release();
+      rateLimitLease = null;
+      return json(
+        {
+          error: `Not enough credits. Required: ${estimatedCost}, available: ${currentCredits}.`,
+        },
+        { status: 402 }
+      );
     }
 
     const apiKey = env.GITHUB_TOKEN || '';
@@ -593,7 +640,8 @@ export const POST: RequestHandler = async ({ request }) => {
 
               if (assistantResponse.trim()) {
                 await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
-                await setUserCredits(supabase, user.id, currentCredits - 1);
+                const responseCost = calculateCreditCost(pageCount, responseModel);
+                await setUserCredits(supabase, user.id, currentCredits - responseCost);
               }
 
               debugLog(requestId, 'response_saved', { sessionId: session.id, responseModel });
@@ -665,7 +713,8 @@ export const POST: RequestHandler = async ({ request }) => {
 
               if (assistantResponse.trim()) {
                 await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
-                await setUserCredits(supabase, user.id, currentCredits - 1);
+                const responseCost = calculateCreditCost(pageCount, responseModel);
+                await setUserCredits(supabase, user.id, currentCredits - responseCost);
               }
 
               debugLog(requestId, 'response_saved', { sessionId: session.id, responseModel });

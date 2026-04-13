@@ -114,7 +114,12 @@ export const POST: RequestHandler = async ({ request, url }) => {
       sessionId: timeoutSession.session_id,
     });
   } catch (err: unknown) {
-    const baseMessage = err instanceof Error ? err.message : 'Checkout creation failed';
+    const baseMessage =
+      err instanceof Error
+        ? err.message
+        : typeof err === 'object' && err !== null && 'message' in err && typeof (err as { message?: unknown }).message === 'string'
+          ? (err as { message: string }).message
+          : 'Checkout creation failed';
     const message = /unauthorized/i.test(baseMessage)
       ? 'Dodo rejected credentials (401). Check DODO_PAYMENTS_API_KEY and DODO_PAYMENTS_ENVIRONMENT (test_mode/live_mode).'
       : baseMessage;

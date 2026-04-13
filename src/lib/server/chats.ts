@@ -165,6 +165,17 @@ export type UserSubscriptionTracking = {
   subscriptionStatus: string;
 };
 
+function isMissingSubscriptionTrackingColumn(error: unknown) {
+  if (!error || typeof error !== 'object') return false;
+
+  const record = error as Record<string, unknown>;
+  const code = typeof record.code === 'string' ? record.code : '';
+  const message = typeof record.message === 'string' ? record.message.toLowerCase() : '';
+
+  if (code === '42703') return true;
+  return message.includes('subscription_id') || message.includes('subscription_status');
+}
+
 export async function getUserSubscriptionTracking(supabase: SupabaseClient, userId: string) {
   const { data, error } = await supabase
     .from('profiles')
@@ -173,6 +184,9 @@ export async function getUserSubscriptionTracking(supabase: SupabaseClient, user
     .maybeSingle();
 
   if (error) {
+    if (isMissingSubscriptionTrackingColumn(error)) {
+      return null;
+    }
     throw error;
   }
 
@@ -211,6 +225,9 @@ export async function setUserSubscriptionTracking(
     .eq('id', userId);
 
   if (error) {
+    if (isMissingSubscriptionTrackingColumn(error)) {
+      return;
+    }
     throw error;
   }
 }
@@ -225,6 +242,9 @@ export async function clearUserSubscriptionTracking(supabase: SupabaseClient, us
     .eq('id', userId);
 
   if (error) {
+    if (isMissingSubscriptionTrackingColumn(error)) {
+      return;
+    }
     throw error;
   }
 }

@@ -177,12 +177,17 @@ async function* streamChatCompletions(
     stream: boolean;
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
     max_tokens: number;
+    reasoning?: { enabled: boolean };
   } = {
     model,
     stream: true,
     messages,
     max_tokens: 1024,
   };
+
+  if (model === 'google/gemma-4-31b-it:free') {
+    body.reasoning = { enabled: true };
+  }
 
   const response = await fetch(CHAT_COMPLETIONS_URL, {
     method: 'POST',

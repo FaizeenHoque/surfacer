@@ -583,8 +583,17 @@
       });
 
       if (!response.ok) {
-        const payload = await response.json();
-        throw new Error(payload.error || 'Chat request failed');
+        const raw = await response.text();
+        let message = 'Chat request failed';
+        if (raw) {
+          try {
+            const payload = JSON.parse(raw) as { error?: string; message?: string };
+            message = payload.error || payload.message || raw;
+          } catch {
+            message = raw;
+          }
+        }
+        throw new Error(message);
       }
 
       if (!response.body) {
@@ -596,6 +605,7 @@
       let content = '';
       let reasoning = '';
       let streamBuffer = '';
+      let eventDataLines: string[] = [];
       let pendingRender = false;
 
       const applyAiUpdate = (force = false) => {
@@ -646,17 +656,37 @@
         }
       };
 
-      const handleSseEvent = (eventBlock: string) => {
-        if (!eventBlock.trim()) return;
+      const flushSseEvent = () => {
+        if (!eventDataLines.length) return;
+        const payloadLine = eventDataLines.join('\n').trim();
+        eventDataLines = [];
+        handlePayload(payloadLine);
+      };
 
-        const lines = eventBlock.split('\n');
-        for (const line of lines) {
-          const raw = line.trim();
-          if (!raw || raw.startsWith('event:') || raw.startsWith(':')) continue;
-          if (raw.startsWith('data:')) {
-            handlePayload(raw.slice(5).trim());
+      const processSseChunk = (chunk: string) => {
+        streamBuffer += chunk;
+
+        while (true) {
+          const match = streamBuffer.match(/\r\n|\n|\r/);
+          if (!match || match.index === undefined) break;
+
+          const lineEnd = match.index;
+          const line = streamBuffer.slice(0, lineEnd);
+          streamBuffer = streamBuffer.slice(lineEnd + match[0].length);
+
+          if (!line) {
+            flushSseEvent();
+            continue;
+          }
+
+          if (line.startsWith(':') || line.startsWith('event:')) {
+            continue;
+          }
+
+          if (line.startsWith('data:')) {
+            eventDataLines.push(line.slice(5).trimStart());
           } else {
-            handlePayload(raw);
+            eventDataLines.push(line);
           }
         }
       };
@@ -665,21 +695,15 @@
         const { done, value } = await reader.read();
         if (done) break;
 
-        streamBuffer += decoder.decode(value, { stream: true });
-
-        let splitAt = streamBuffer.indexOf('\n\n');
-        while (splitAt >= 0) {
-          const eventBlock = streamBuffer.slice(0, splitAt);
-          streamBuffer = streamBuffer.slice(splitAt + 2);
-          handleSseEvent(eventBlock);
-          splitAt = streamBuffer.indexOf('\n\n');
-        }
+        processSseChunk(decoder.decode(value, { stream: true }));
       }
 
-      streamBuffer += decoder.decode();
+      processSseChunk(decoder.decode());
       if (streamBuffer.trim()) {
-        handleSseEvent(streamBuffer.trim());
+        eventDataLines.push(streamBuffer.trim());
+        streamBuffer = '';
       }
+      flushSseEvent();
 
       applyAiUpdate(true);
 

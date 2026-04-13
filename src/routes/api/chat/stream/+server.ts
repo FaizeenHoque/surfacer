@@ -38,6 +38,15 @@ type ChatDeltaEvent = {
   }>;
 };
 
+function parseJsonSafe<T>(raw: string): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
 function getCachedFileText(filePath: string) {
   return FILE_TEXT_CACHE.get(filePath)?.text || null;
 }
@@ -108,9 +117,11 @@ async function embedInputs(
     }),
   });
 
-  const data = (await response.json()) as EmbeddingApiResponse & { error?: { message?: string } };
+  const raw = await response.text();
+  const data = parseJsonSafe<EmbeddingApiResponse & { error?: { message?: string }; message?: string }>(raw) || {};
+
   if (!response.ok) {
-    throw new Error(data.error?.message || 'Embedding request failed');
+    throw new Error(data.error?.message || data.message || raw || 'Embedding request failed');
   }
 
   return (data.data || []).map((entry) => (Array.isArray(entry.embedding) ? entry.embedding : []));
@@ -201,8 +212,9 @@ async function* streamChatCompletions(
   });
 
   if (!response.ok) {
-    const err = (await response.json().catch(() => ({}))) as { error?: { message?: string }; message?: string };
-    throw new Error(err.error?.message || err.message || 'Provider returned error');
+    const raw = await response.text();
+    const err = parseJsonSafe<{ error?: { message?: string }; message?: string }>(raw) || {};
+    throw new Error(err.error?.message || err.message || raw || 'Provider returned error');
   }
 
   if (!response.body) {

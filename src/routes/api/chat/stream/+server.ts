@@ -730,21 +730,29 @@ export const POST: RequestHandler = async ({ request }) => {
   let rateLimitLease: RateLimitLease | null = null;
   try {
     const authHeader = request.headers.get('authorization');
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
-    if (!token) {
+    if (!headerToken) {
       return json({ error: 'Missing auth token' }, { status: 401 });
     }
 
-    const supabase = createAuthedSupabase(token);
-    const user = await getUserFromToken(supabase, token);
-
+    // Parse body first before doing any async auth work
     const payload = await request.json();
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
     const filePath = typeof payload.filePath === 'string' ? payload.filePath : '';
     const requestedModel = typeof payload.model === 'string' ? payload.model : '';
     const isFollowUp = payload.followUp === true;
     const model = ALLOWED_MODELS.has(requestedModel) ? requestedModel : BASIC_MODEL;
+
+    // Now validate auth with Supabase
+    const supabase = createAuthedSupabase(headerToken);
+    let user;
+    try {
+      user = await getUserFromToken(supabase, headerToken);
+    } catch (authErr: unknown) {
+      const authMessage = authErr instanceof Error ? authErr.message : 'Authentication failed';
+      return json({ error: authMessage }, { status: 401 });
+    }
 
     debugLog(requestId, 'request_received', {
       userId: user.id,
@@ -786,19 +794,37 @@ export const POST: RequestHandler = async ({ request }) => {
 
     if (!fileText) {
       const bucket = env.SUPABASE_STORAGE_BUCKET || 'documents';
-      const { data: blob, error: downloadError } = await supabase.storage.from(bucket).download(filePath);
+      
+      // Recreate Supabase client with fresh auth context for storage download
+      const storageSupa = createAuthedSupabase(headerToken);
+      const { data: blob, error: downloadError } = await storageSupa.storage.from(bucket).download(filePath);
 
       if (downloadError || !blob) {
+        const errorMsg = downloadError?.message || 'File not found';
+        debugLog(requestId, 'storage_download_failed', {
+          filePath,
+          errorMsg,
+          errorStatus: downloadError?.status,
+        });
         rateLimitLease.release();
         rateLimitLease = null;
-        return json({ error: downloadError?.message || 'File not found' }, { status: 404 });
+        return json({ error: errorMsg }, { status: downloadError?.status === 401 ? 401 : 404 });
       }
 
-      const fileBytes = await blob.arrayBuffer();
-      const extracted = await extractText(fileName, fileBytes);
-      fileText = extracted.text;
-      pageCount = extracted.pageCount;
-      setCachedFileText(filePath, fileText, pageCount);
+      try {
+        const fileBytes = await blob.arrayBuffer();
+        const extracted = await extractText(fileName, fileBytes);
+        fileText = extracted.text;
+        pageCount = extracted.pageCount;
+        setCachedFileText(filePath, fileText, pageCount);
+      } catch (extractErr) {
+        const extractMessage = extractErr instanceof Error ? extractErr.message : 'Failed to extract file text';
+        debugLog(requestId, 'file_extraction_failed', {
+          filePath,
+          errorMsg: extractMessage,
+        });
+        throw extractErr;
+      }
     }
 
     if (pageCount <= 0) {
@@ -1024,7 +1050,13 @@ export const POST: RequestHandler = async ({ request }) => {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unexpected chat error';
     rateLimitLease?.release();
-    console.error(`[chat:${requestId}] request_failed`, err);
+    const errorDetails = {
+      requestId,
+      message,
+      type: err instanceof Error ? err.constructor.name : typeof err,
+      stack: err instanceof Error ? err.stack : undefined,
+    };
+    console.error(`[chat:${requestId}] request_failed`, errorDetails);
     return json({ error: message }, { status: 500 });
   }
 };

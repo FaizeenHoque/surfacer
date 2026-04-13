@@ -67,7 +67,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
     const fileBytes = await blob.arrayBuffer();
     const fileName = fileNameFromPath(filePath);
-    const fileText = (await extractText(fileName, fileBytes)).slice(0, 24000);
+    const fileText = await extractText(fileName, fileBytes);
     const session = await getOrCreateChatSession(supabase, user.id, filePath, fileName);
     const priorMessages = await listChatMessages(supabase, session.id);
 

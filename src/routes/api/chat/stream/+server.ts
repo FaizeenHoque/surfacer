@@ -656,8 +656,8 @@ export const POST: RequestHandler = async ({ request }) => {
         new ReadableStream({
           async start(controller) {
             try {
-              const sendEvent = (type: 'content' | 'reasoning' | 'done', delta = '') => {
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type, delta })}\n\n`));
+              const sendEvent = (payload: Record<string, unknown>) => {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
               };
 
               controller.enqueue(encoder.encode(': stream-open\n\n'));
@@ -671,23 +671,28 @@ export const POST: RequestHandler = async ({ request }) => {
                   normalizeDeltaText(deltaNode?.reasoningContent);
 
                 if (reasoningDelta) {
-                  sendEvent('reasoning', reasoningDelta);
+                  sendEvent({ type: 'reasoning', delta: reasoningDelta });
                 }
 
                 if (contentDelta) {
                   assistantResponse += contentDelta;
-                  sendEvent('content', contentDelta);
+                  sendEvent({ type: 'content', delta: contentDelta });
                 }
               }
-
-              sendEvent('done');
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
 
               if (assistantResponse.trim()) {
                 await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
                 const responseCost = calculateCreditCost(pageCount, responseModel);
-                await setUserCredits(supabase, user.id, currentCredits - responseCost);
+                const creditsRemaining = await setUserCredits(supabase, user.id, currentCredits - responseCost);
+                sendEvent({
+                  type: 'usage',
+                  creditsUsed: responseCost,
+                  creditsRemaining,
+                });
               }
+
+              sendEvent({ type: 'done' });
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
 
               debugLog(requestId, 'response_saved', { sessionId: session.id, responseModel });
               controller.close();
@@ -729,8 +734,8 @@ export const POST: RequestHandler = async ({ request }) => {
         new ReadableStream({
           async start(controller) {
             try {
-              const sendEvent = (type: 'content' | 'reasoning' | 'done', delta = '') => {
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type, delta })}\n\n`));
+              const sendEvent = (payload: Record<string, unknown>) => {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
               };
 
               controller.enqueue(encoder.encode(': stream-open\n\n'));
@@ -744,23 +749,28 @@ export const POST: RequestHandler = async ({ request }) => {
                   normalizeDeltaText(deltaNode?.reasoningContent);
 
                 if (reasoningDelta) {
-                  sendEvent('reasoning', reasoningDelta);
+                  sendEvent({ type: 'reasoning', delta: reasoningDelta });
                 }
 
                 if (contentDelta) {
                   assistantResponse += contentDelta;
-                  sendEvent('content', contentDelta);
+                  sendEvent({ type: 'content', delta: contentDelta });
                 }
               }
-
-              sendEvent('done');
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
 
               if (assistantResponse.trim()) {
                 await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantResponse.trim());
                 const responseCost = calculateCreditCost(pageCount, responseModel);
-                await setUserCredits(supabase, user.id, currentCredits - responseCost);
+                const creditsRemaining = await setUserCredits(supabase, user.id, currentCredits - responseCost);
+                sendEvent({
+                  type: 'usage',
+                  creditsUsed: responseCost,
+                  creditsRemaining,
+                });
               }
+
+              sendEvent({ type: 'done' });
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
 
               debugLog(requestId, 'response_saved', { sessionId: session.id, responseModel });
               controller.close();

@@ -772,7 +772,12 @@
         if (!payloadLine || payloadLine === '[DONE]') return;
 
         try {
-          const payload = JSON.parse(payloadLine) as { type?: string; delta?: string };
+          const payload = JSON.parse(payloadLine) as {
+            type?: string;
+            delta?: string;
+            creditsUsed?: number;
+            creditsRemaining?: number;
+          };
           if (payload.type === 'reasoning' && payload.delta) {
             reasoning += payload.delta;
             applyAiUpdate();
@@ -782,6 +787,11 @@
           if (payload.type === 'content' && payload.delta) {
             content += payload.delta;
             applyAiUpdate();
+            return;
+          }
+
+          if (payload.type === 'usage' && typeof payload.creditsRemaining === 'number') {
+            credits = Math.max(0, payload.creditsRemaining);
             return;
           }
         } catch {
@@ -848,9 +858,6 @@
         messages = next;
       }
 
-      if (content.trim()) {
-        credits = Math.max(0, credits - 1);
-      }
     } catch (err: unknown) {
       const errorText = err instanceof DOMException && err.name === 'AbortError'
         ? 'Request timed out. Please try again.'
@@ -1213,7 +1220,7 @@
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 mb-1.5">
                 <span class="text-xs font-semibold" style="color:#00e5a0">Surfacer</span>
-                <span class="text-[10px] font-mono" style="color:#4a4a5e">{msg.timestamp} · 1 credit used</span>
+                <span class="text-[10px] font-mono" style="color:#4a4a5e">{msg.timestamp}</span>
               </div>
               {#if msg.reasoning?.trim()}
                 <details class="ai-reasoning-box mb-2" open={reasoningVisibility === 'show'}>

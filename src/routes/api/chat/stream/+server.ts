@@ -682,20 +682,29 @@ async function extractText(fileName: string, bytes: ArrayBuffer): Promise<Extrac
   const fileBytes = Buffer.from(bytes);
 
   if (ext === 'pdf') {
-    const parser = new PDFParse({ data: fileBytes });
     try {
-      const info = await parser.getInfo().catch(() => null);
-      const parsed = await parser.getText();
-      const totalPages = typeof info?.total === 'number' && info.total > 0
-        ? info.total
-        : estimatePageCountFromText(parsed.text || '');
-
-      return {
-        text: parsed.text || 'No readable text could be extracted from this PDF.',
-        pageCount: Math.max(1, Math.floor(totalPages)),
-      };
-    } finally {
+      const parser = new PDFParse({ data: fileBytes });
+      const result = await parser.getText();
       await parser.destroy();
+      return {
+        text: result.text?.trim() || 'No readable text could be extracted from this PDF.',
+        pageCount: Math.max(1, result.total || estimatePageCountFromText(result.text || '')),
+      };
+    } catch (pdfErr) {
+      const msg = pdfErr instanceof Error ? pdfErr.message : String(pdfErr);
+      // Scanned/image-only or encrypted PDFs have no text layer — degrade gracefully
+      if (
+        msg.toLowerCase().includes('encrypt') ||
+        msg.toLowerCase().includes('password') ||
+        msg.toLowerCase().includes('bad xref') ||
+        msg.toLowerCase().includes('invalid pdf')
+      ) {
+        return {
+          text: 'This PDF could not be parsed. It may be scanned, image-only, encrypted, or corrupted.',
+          pageCount: estimatePageCountFromBytes(fileBytes.byteLength),
+        };
+      }
+      throw pdfErr;
     }
   }
 
@@ -732,6 +741,13 @@ export const POST: RequestHandler = async ({ request }) => {
     const authHeader = request.headers.get('authorization');
     const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
+    debugLog(requestId, 'auth_check', {
+      hasAuthHeader: !!authHeader,
+      authHeaderPrefix: authHeader?.slice(0, 10),
+      tokenLength: headerToken.length,
+      isTokenEmpty: headerToken === '',
+    });
+
     if (!headerToken) {
       return json({ error: 'Missing auth token' }, { status: 401 });
     }
@@ -751,6 +767,10 @@ export const POST: RequestHandler = async ({ request }) => {
       user = await getUserFromToken(supabase, headerToken);
     } catch (authErr: unknown) {
       const authMessage = authErr instanceof Error ? authErr.message : 'Authentication failed';
+      debugLog(requestId, 'getUserFromToken_failed', {
+        errorMsg: authMessage,
+        tokenLength: headerToken.length,
+      });
       return json({ error: authMessage }, { status: 401 });
     }
 
@@ -795,6 +815,12 @@ export const POST: RequestHandler = async ({ request }) => {
     if (!fileText) {
       const bucket = env.SUPABASE_STORAGE_BUCKET || 'documents';
       
+      debugLog(requestId, 'storage_download_start', {
+        filePath,
+        bucket,
+        tokenLength: headerToken.length,
+      });
+
       const { data: blob, error: downloadError } = await supabase.storage.from(bucket).download(filePath);
 
       if (downloadError || !blob) {
@@ -803,6 +829,7 @@ export const POST: RequestHandler = async ({ request }) => {
           filePath,
           errorMsg,
           errorStatus: downloadError?.status,
+          downloadErrorDetails: JSON.stringify(downloadError),
         });
         rateLimitLease.release();
         rateLimitLease = null;

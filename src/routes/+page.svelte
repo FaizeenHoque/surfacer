@@ -1784,150 +1784,190 @@
       </button>
       <!-- User Profile & Settings Menu -->
       {#if currentUser}
-        <div class="relative">
-          <button
-            onclick={() => { isSettingsMenuOpen = !isSettingsMenuOpen; }}
-            class="w-full flex items-center gap-2.5 p-2 rounded-lg transition-all"
-            style="background:{isSettingsMenuOpen ? '#18181e' : 'transparent'}; border:1px solid {isSettingsMenuOpen ? '#ffffff1a' : 'transparent'}"
-          >
-            <div class="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 uppercase" style="background:#00e5a0; color:#09090d">
-              {currentUser.email?.[0] || 'U'}
-            </div>
-            <div class="min-w-0 flex-1 text-left">
-              <p class="text-xs font-medium text-white truncate">{currentUser.email?.split('@')[0] || 'User'}</p>
-              <p class="text-[10px] font-mono truncate" style="color:#4a4a5e">{currentUser.email || ''}</p>
-            </div>
-            <svg class="w-3.5 h-3.5 shrink-0" style="color:#4a4a5e; transition:transform 0.2s" style:transform={isSettingsMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)'} fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
-            </svg>
-          </button>
+        <button
+          onclick={() => { isSettingsMenuOpen = !isSettingsMenuOpen; }}
+          class="w-full flex items-center gap-2.5 p-2.5 rounded-xl transition-all duration-200 hover:bg-opacity-60"
+          style="background:{isSettingsMenuOpen ? '#00e5a015' : '#ffffff07'}; border:1px solid {isSettingsMenuOpen ? '#00e5a030' : '#ffffff0d'}"
+        >
+          <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 uppercase" style="background:linear-gradient(135deg, #00e5a0, #00d98e); color:#09090d">
+            {currentUser.email?.[0] || 'U'}
+          </div>
+          <div class="min-w-0 flex-1 text-left">
+            <p class="text-xs font-semibold text-white truncate">{currentUser.email?.split('@')[0] || 'User'}</p>
+            <p class="text-[9px] font-mono truncate" style="color:#7a7f9f">{currentUser.email || ''}</p>
+          </div>
+          <svg class="w-4 h-4 shrink-0 transition-transform duration-300" style="color:#7a7f9f; transform:rotate({isSettingsMenuOpen ? 180 : 0}deg)" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+          </svg>
+        </button>
 
-          {#if isSettingsMenuOpen}
-            <div class="absolute bottom-full left-0 right-0 mb-2 rounded-lg border overflow-hidden" style="background:#0f1219; border-color:#ffffff1a">
-              <!-- Tabs -->
-              <div class="flex border-b" style="border-color:#ffffff0d">
-                <button
-                  onclick={() => { settingsMenuTab = 'general'; }}
-                  class="flex-1 px-3 py-2 text-[10px] font-mono font-medium transition-all text-center"
-                  style="background:{settingsMenuTab === 'general' ? '#00e5a0' : 'transparent'}; color:{settingsMenuTab === 'general' ? '#09090d' : '#8b90a5'}"
-                >
-                  General
-                </button>
-                <button
-                  onclick={() => { settingsMenuTab = 'privacy'; }}
-                  class="flex-1 px-3 py-2 text-[10px] font-mono font-medium transition-all text-center"
-                  style="background:{settingsMenuTab === 'privacy' ? '#00e5a0' : 'transparent'}; color:{settingsMenuTab === 'privacy' ? '#09090d' : '#8b90a5'}"
-                >
-                  Privacy
-                </button>
+        <!-- Settings Menu Modal Overlay -->
+        {#if isSettingsMenuOpen}
+          <div class="fixed inset-0 z-30 animate-fade-in" role="button" tabindex="0" style="background:rgba(0, 0, 0, 0.4)" onclick={() => { isSettingsMenuOpen = false; }} onkeydown={(e) => { if (e.key === 'Escape' || e.key === 'Enter') isSettingsMenuOpen = false; }}></div>
+          
+          <!-- Settings Panel -->
+          <div class="fixed bottom-0 left-0 right-0 md:right-4 md:bottom-24 md:left-auto rounded-t-2xl md:rounded-2xl border z-40 shadow-2xl animation-slide-up md:animation-scale-up md:max-w-sm" style="background: linear-gradient(135deg, #0f1219 0%, #141a25 100%); border-color:#ffffff15">
+            <!-- Header -->
+            <div class="flex items-center justify-between px-6 py-5 border-b" style="border-color:#ffffff0d">
+              <div>
+                <h2 class="text-sm font-semibold text-white">Settings</h2>
+                <p class="text-[10px] font-mono" style="color:#7a7f9f">{currentUser.email || ''}</p>
               </div>
+              <button
+                title="Close settings menu"
+                onclick={() => { isSettingsMenuOpen = false; }}
+                class="p-2 rounded-lg transition-all hover:bg-opacity-80"
+                style="background:#ffffff08; border:1px solid #ffffff0d"
+              >
+                <svg class="w-4 h-4" style="color:#7a7f9f" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
 
-              <!-- Tab Content -->
-              <div class="max-h-60 overflow-y-auto px-3 py-3">
+            <!-- Tabs -->
+            <div class="flex px-2 pt-2" style="border-bottom:1px solid #ffffff08">
+              <button
+                onclick={() => { settingsMenuTab = 'general'; }}
+                class="flex-1 px-3 py-3 text-xs font-semibold transition-all relative"
+                style="color:{settingsMenuTab === 'general' ? '#00e5a0' : '#7a7f9f'}"
+              >
+                Settings
                 {#if settingsMenuTab === 'general'}
-                  <!-- General Tab -->
-                  <div class="space-y-3">
-                    <div class="text-[9px] font-mono uppercase tracking-wider" style="color:#4a4a5e">Model</div>
+                  <div class="absolute bottom-0 left-0 right-0 h-0.5" style="background:#00e5a0"></div>
+                {/if}
+              </button>
+              <button
+                onclick={() => { settingsMenuTab = 'privacy'; }}
+                class="flex-1 px-3 py-3 text-xs font-semibold transition-all relative"
+                style="color:{settingsMenuTab === 'privacy' ? '#00e5a0' : '#7a7f9f'}"
+              >
+                History
+                {#if settingsMenuTab === 'privacy'}
+                  <div class="absolute bottom-0 left-0 right-0 h-0.5" style="background:#00e5a0"></div>
+                {/if}
+              </button>
+            </div>
+
+            <!-- Content -->
+            <div class="overflow-y-auto max-h-72 px-4 py-4">
+              {#if settingsMenuTab === 'general'}
+                <!-- Settings Tab -->
+                <div class="space-y-5">
+                  <!-- Model Selection -->
+                  <div>
+                    <label for="model-select" class="text-[10px] font-semibold uppercase tracking-wider" style="color:#7a7f9f">Model</label>
                     <select
+                      id="model-select"
                       bind:value={selectedModel}
-                      class="w-full px-2.5 py-1.5 rounded text-[10px] font-mono text-white"
-                      style="background:#18181e; border:1px solid #ffffff0d"
+                      class="w-full mt-2 px-3 py-2.5 rounded-lg text-xs font-mono text-white transition-all"
+                      style="background:#ffffff07; border:1px solid #ffffff0d"
                     >
                       {#each modelOptions as model (model.value)}
                         <option value={model.value}>{model.label}</option>
                       {/each}
                     </select>
+                  </div>
 
-                    <div class="flex items-center justify-between pt-2">
-                      <span class="text-[9px] font-mono uppercase tracking-wider" style="color:#4a4a5e">Reasoning</span>
-                      <button
-                        onclick={() => { reasoningVisibility = reasoningVisibility === 'hide' ? 'show' : 'hide'; }}
-                        class="px-2 py-1 rounded text-[8px] font-mono transition-all"
-                        style="background:{reasoningVisibility === 'show' ? '#00e5a014' : '#18181e'}; border:1px solid {reasoningVisibility === 'show' ? '#00e5a026' : '#ffffff0d'}; color:{reasoningVisibility === 'show' ? '#00e5a0' : '#8b90a5'}"
-                      >
-                        {reasoningVisibility === 'show' ? 'Shown' : 'Hidden'}
-                      </button>
-                    </div>
-
+                  <!-- Reasoning Toggle -->
+                  <div class="flex items-center justify-between">
+                    <label for="reasoning-toggle" class="text-[10px] font-semibold uppercase tracking-wider" style="color:#7a7f9f">AI Reasoning</label>
                     <button
-                      onclick={openBillingModal}
-                      disabled={isCreatingCheckout || creditPacks.length === 0}
-                      class="w-full mt-2 py-1.5 rounded text-[9px] font-mono font-medium transition-all"
-                      style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
+                      id="reasoning-toggle"
+                      aria-label="Toggle AI reasoning visibility"
+                      onclick={() => { reasoningVisibility = reasoningVisibility === 'hide' ? 'show' : 'hide'; }}
+                      class="px-3 py-1.5 rounded-lg text-xs font-mono font-semibold transition-all"
+                      style="background:{reasoningVisibility === 'show' ? '#00e5a0' : '#ffffff07'}; border:1px solid {reasoningVisibility === 'show' ? '#00e5a03a' : '#ffffff0d'}; color:{reasoningVisibility === 'show' ? '#09090d' : '#8b90a5'}"
                     >
-                      + Buy Credits
-                    </button>
-
-                    <button
-                      onclick={() => { messages = []; activeFilePath = null; activeFileName = null; promptValue = ''; }}
-                      class="w-full py-1.5 rounded text-[9px] font-mono font-medium transition-all"
-                      style="background:#18181e; border:1px solid #ffffff0d; color:#8b90a5"
-                    >
-                      Clear Chat
-                    </button>
-
-                    <button
-                      onclick={handleLogout}
-                      class="w-full py-1.5 rounded text-[9px] font-mono font-medium transition-all" 
-                      style="background:#18181e; border:1px solid #ffffff0d; color:#ff8787"
-                    >
-                      Logout
+                      {reasoningVisibility === 'show' ? 'Shown' : 'Hidden'}
                     </button>
                   </div>
-                {:else}
-                  <!-- Privacy Tab (Extraction History) -->
-                  <div class="space-y-2">
-                    <div class="px-2 py-1.5 rounded" style="background:#18181e; border:1px solid #ffffff0d">
-                      <div class="flex items-center gap-1.5">
-                        <svg class="w-3 h-3 shrink-0" style="color:#4a4a5e" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                          <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                        </svg>
-                        <input
-                          value={extractionQuery}
-                          oninput={handleExtractionSearchInput}
-                          type="text"
-                          placeholder="Search"
-                          class="bg-transparent text-[9px] font-mono text-white placeholder:text-gray-500 w-full focus:ring-0 border-0"
-                        />
-                      </div>
-                    </div>
 
-                    {#if isLoadingExtractions}
-                      <div class="px-2 py-2 text-[9px] font-mono text-center" style="color:#4a4a5e">Loading...</div>
-                    {:else if extractionHistory.length === 0}
-                      <div class="px-2 py-2 text-[9px] font-mono text-center" style="color:#4a4a5e">No extractions yet</div>
-                    {:else}
-                      <div class="space-y-1.5 max-h-40 overflow-y-auto">
-                        {#each extractionHistory as extraction (extraction.id)}
-                          <div class="rounded p-1.5 text-[8px]" style="background:#18181e; border:1px solid #ffffff0d">
-                            <p class="font-semibold text-white truncate">{extraction.file_name}</p>
-                            <p class="text-gray-500 truncate" style="color:#4a4a5e">Q: {extraction.prompt.slice(0, 40)}...</p>
-                            <div class="flex gap-1 mt-1">
-                              <button
-                                class="px-1.5 py-0.5 rounded text-[7px] transition-all"
-                                style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
-                                onclick={() => void openExtractionDocument(extraction, false)}
-                              >
-                                Open
-                              </button>
-                              <button
-                                class="px-1.5 py-0.5 rounded text-[7px] transition-all"
-                                style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
-                                onclick={() => void openExtractionDocument(extraction, true)}
-                              >
-                                Re-run
-                              </button>
-                            </div>
+                  <!-- Divider -->
+                  <div style="height:1px; background:#ffffff0d"></div>
+
+                  <!-- Buy Credits -->
+                  <button
+                    onclick={openBillingModal}
+                    disabled={isCreatingCheckout || creditPacks.length === 0}
+                    class="w-full py-2.5 rounded-lg text-xs font-semibold transition-all"
+                    style="background:linear-gradient(135deg, #00e5a015, #00e5a010); border:1px solid #00e5a03a; color:#00e5a0"
+                  >
+                    💳 Buy Credits
+                  </button>
+
+                  <!-- Clear Chat -->
+                  <button
+                    onclick={() => { messages = []; activeFilePath = null; activeFileName = null; promptValue = ''; isSettingsMenuOpen = false; }}
+                    class="w-full py-2.5 rounded-lg text-xs font-semibold transition-all"
+                    style="background:#ffffff07; border:1px solid #ffffff0d; color:#c7cbe0"
+                  >
+                    🗑️ Clear Chat
+                  </button>
+
+                  <!-- Logout -->
+                  <button
+                    onclick={handleLogout}
+                    class="w-full py-2.5 rounded-lg text-xs font-semibold transition-all" 
+                    style="background:#ff574233; border:1px solid #ff574244; color:#ff8787"
+                  >
+                    🚪 Logout
+                  </button>
+                </div>
+              {:else}
+                <!-- History Tab -->
+                <div class="space-y-3">
+                  <!-- Search -->
+                  <div class="relative">
+                    <svg class="absolute left-3 top-2.5 w-3.5 h-3.5 shrink-0" style="color:#7a7f9f" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    <input
+                      value={extractionQuery}
+                      oninput={handleExtractionSearchInput}
+                      type="text"
+                      placeholder="Search history..."
+                      class="w-full pl-9 pr-3 py-2.5 rounded-lg text-xs font-mono text-white placeholder:text-gray-600 transition-all"
+                      style="background:#ffffff07; border:1px solid #ffffff0d"
+                    />
+                  </div>
+
+                  <!-- History Items -->
+                  {#if isLoadingExtractions}
+                    <div class="px-3 py-4 text-[9px] font-mono text-center" style="color:#7a7f9f">Loading...</div>
+                  {:else if extractionHistory.length === 0}
+                    <div class="px-3 py-6 text-[9px] font-mono text-center" style="color:#7a7f9f">No extraction history yet</div>
+                  {:else}
+                    <div class="space-y-2">
+                      {#each extractionHistory as extraction (extraction.id)}
+                        <div class="rounded-lg p-3 transition-all hover:bg-opacity-80" style="background:#ffffff07; border:1px solid #ffffff0d">
+                          <p class="text-xs font-semibold text-white truncate mb-1">{extraction.file_name}</p>
+                          <p class="text-[9px] font-mono truncate mb-2" style="color:#7a7f9f">Q: {extraction.prompt.slice(0, 50)}...</p>
+                          <div class="flex gap-2">
+                            <button
+                              class="flex-1 px-2 py-1.5 rounded-lg text-[9px] font-semibold transition-all"
+                              style="background:#ffffff0d; border:1px solid #ffffff0d; color:#c9c9d9"
+                              onclick={() => void openExtractionDocument(extraction, false)}
+                            >
+                              View
+                            </button>
+                            <button
+                              class="flex-1 px-2 py-1.5 rounded-lg text-[9px] font-semibold transition-all"
+                              style="background:#00e5a015; border:1px solid #00e5a03a; color:#00e5a0"
+                              onclick={() => void openExtractionDocument(extraction, true)}
+                            >
+                              Re-run
+                            </button>
                           </div>
-                        {/each}
-                      </div>
-                    {/if}
-                  </div>
-                {/if}
-              </div>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
             </div>
-          {/if}
-        </div>
+          </div>
+        {/if}
       {/if}
     </div>
   </aside>
@@ -2283,6 +2323,46 @@
   :global(*) { box-sizing: border-box; }
   :global(body) { margin: 0; font-family: 'Syne', sans-serif; background: #09090d; }
   :global(.font-mono) { font-family: 'JetBrains Mono', monospace; }
+
+  /* Menu Animations */
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes scaleUp {
+    from {
+      opacity: 0;
+      transform: scale(0.95) translateY(0.5rem);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.25s ease-out;
+  }
+
+  .animation-slide-up {
+    animation: slideUp 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .animation-scale-up {
+    animation: scaleUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
 
   /* Scrollbar */
   ::-webkit-scrollbar { width: 4px; }

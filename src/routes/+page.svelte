@@ -538,10 +538,12 @@
         scrollToBottom();
       }
 
+      content += decoder.decode();
+
       const next = [...messages];
       const target = next[aiIndex];
       if (target && target.type === 'ai') {
-        next[aiIndex] = { ...target, streaming: false };
+        next[aiIndex] = { ...target, content, streaming: false };
         messages = next;
       }
     } catch (err: unknown) {

@@ -90,6 +90,7 @@
   let shareDialogLoading = $state(false);
   let shareDialogError = $state<string | null>(null);
   let shareDialogUrl = $state<string | null>(null);
+  let isSettingsWindowOpen = $state(false);
 
   // ── Init ────────────────────────────────────────────────────────────────────
   onMount(() => {
@@ -1155,6 +1156,13 @@
     const file = target.files?.[0];
     if (!file || isUploading) return;
 
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+    if (file.size > MAX_FILE_SIZE) {
+      notifySystem(`File exceeds 10MB limit. Your file is ${(file.size / 1024 / 1024).toFixed(1)}MB.`);
+      target.value = '';
+      return;
+    }
+
     isUploading = true;
     try {
       const token = await getAccessToken();
@@ -1176,6 +1184,7 @@
         throw new Error(payload.error || 'Upload failed');
       }
 
+      notifySystem('File uploaded successfully.');
       await loadFiles();
       const uploaded = files.find((entry) => entry.path === payload.file.path);
       if (uploaded) {
@@ -1183,7 +1192,7 @@
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Upload failed';
-      messages = [...messages, { id: makeMessageId('system'), type: 'system', text: message }];
+      notifySystem(message);
     } finally {
       isUploading = false;
       target.value = '';
@@ -1687,65 +1696,19 @@
         </div>
       {/if}
 
-      <div class="mt-4 mb-1.5">
-        <p class="text-[9px] font-mono tracking-[2px] uppercase px-1" style="color:#4a4a5e">Extraction History (30d)</p>
-      </div>
-      <div class="px-1 mb-1.5">
-        <div class="flex items-center gap-2 px-2.5 py-2 rounded-lg" style="background:#18181e; border:1px solid #ffffff0d">
-          <svg class="w-3 h-3 shrink-0" style="color:#4a4a5e" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-          </svg>
-          <input
-            value={extractionQuery}
-            oninput={handleExtractionSearchInput}
-            type="text"
-            placeholder="Search extractions"
-            class="bg-transparent text-[11px] font-mono text-white placeholder-muted w-full focus:ring-0"
-            style="color:white"
-          />
-        </div>
-      </div>
+      <!-- Settings button -->
+      <button
+        onclick={() => { isSettingsWindowOpen = true; }}
+        class="w-full mt-4 flex items-center justify-center gap-2 py-2.5 rounded-lg border text-xs font-mono tracking-wide transition-all duration-200"
+        style="border-color:#ffffff1f; color:#99a3bf; background:#0a0d14"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        Settings & History
+      </button>
 
-      {#if isLoadingExtractions}
-        <div class="px-3 py-3 text-[10px] font-mono" style="color:#4a4a5e">Loading extraction history...</div>
-      {:else if extractionError}
-        <div class="px-3 py-3 text-[10px] font-mono" style="color:#ff8787">{extractionError}</div>
-      {:else if extractionHistory.length === 0}
-        <div class="px-3 py-3 text-[10px] font-mono" style="color:#4a4a5e">No extractions found in the last 30 days.</div>
-      {:else}
-        <div class="extraction-history-scroll px-1 pb-1">
-          <div class="flex flex-col gap-1.5">
-            {#each extractionHistory as extraction (extraction.id)}
-              <div class="rounded-lg p-2" style="background:#111116; border:1px solid #ffffff0d">
-                <div class="flex items-center justify-between gap-2 mb-1">
-                  <p class="text-[10px] font-semibold truncate" style="color:rgba(255,255,255,0.85)">{extraction.file_name}</p>
-                  <span class="text-[8px] font-mono shrink-0" style="color:#4a4a5e">{formatRelativeTime(extraction.created_at)}</span>
-                </div>
-                <p class="text-[9px] leading-snug mb-0.5" style="color:#8b90a5">P: {shorten(extraction.prompt, 62)}</p>
-                <p class="text-[9px] leading-snug mb-1.5" style="color:#4a4a5e">R: {shorten(extraction.result, 68)}</p>
-                <div class="flex items-center gap-1.5">
-                  <button
-                    class="px-2 py-0.5 rounded text-[8px] font-mono transition-all"
-                    style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
-                    onclick={() => void openExtractionDocument(extraction, false)}
-                  >
-                    Open
-                  </button>
-                  <button
-                    class="px-2 py-0.5 rounded text-[8px] font-mono transition-all"
-                    style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
-                    onclick={() => void openExtractionDocument(extraction, true)}
-                  >
-                    Re-run
-                  </button>
-                </div>
-              </div>
-            {/each}
-            </div>
-        </div>
-      {/if}
-
-      <!-- Templates -->
       <div class="mt-4 mb-2">
         <p class="text-[9px] font-mono tracking-[2px] uppercase px-1" style="color:#4a4a5e">Templates</p>
       </div>
@@ -2108,6 +2071,82 @@
           <button class="share-action-btn" onclick={() => shareDialogUrl && window.open(shareDialogUrl, '_blank', 'noopener,noreferrer')}>Open link</button>
         </div>
       {/if}
+    </div>
+  {/if}
+
+  {#if isSettingsWindowOpen}
+    <button class="settings-dialog-backdrop" aria-label="Close settings" onclick={() => { isSettingsWindowOpen = false; }}></button>
+    <div class="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings and extraction history">
+      <div class="settings-dialog-head">
+        <h3>Settings & History</h3>
+        <button class="settings-close-btn" onclick={() => { isSettingsWindowOpen = false; }} aria-label="Close settings">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="settings-content">
+        <!-- Extraction History Section -->
+        <div class="settings-section">
+          <h4 class="settings-section-title">Extraction History (Last 30 Days)</h4>
+          
+          <div class="px-2.5 py-2 rounded-lg mb-3" style="background:#18181e; border:1px solid #ffffff0d">
+            <div class="flex items-center gap-2">
+              <svg class="w-3 h-3 shrink-0" style="color:#4a4a5e" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+              </svg>
+              <input
+                value={extractionQuery}
+                oninput={handleExtractionSearchInput}
+                type="text"
+                placeholder="Search extractions"
+                class="bg-transparent text-[10px] font-mono text-white placeholder-muted w-full focus:ring-0"
+                style="color:white"
+              />
+            </div>
+          </div>
+
+          {#if isLoadingExtractions}
+            <div class="px-3 py-3 text-[10px] font-mono text-center" style="color:#4a4a5e">Loading extraction history...</div>
+          {:else if extractionError}
+            <div class="px-3 py-3 text-[10px] font-mono text-center" style="color:#ff8787">{extractionError}</div>
+          {:else if extractionHistory.length === 0}
+            <div class="px-3 py-3 text-[10px] font-mono text-center" style="color:#4a4a5e">No extractions found in the last 30 days.</div>
+          {:else}
+            <div class="extraction-history-modal-scroll">
+              <div class="flex flex-col gap-2">
+                {#each extractionHistory as extraction (extraction.id)}
+                  <div class="rounded-lg p-2.5" style="background:#0a0d14; border:1px solid #ffffff0d">
+                    <div class="flex items-center justify-between gap-2 mb-1">
+                      <p class="text-[10px] font-semibold truncate" style="color:rgba(255,255,255,0.85)">{extraction.file_name}</p>
+                      <span class="text-[8px] font-mono shrink-0" style="color:#4a4a5e">{formatRelativeTime(extraction.created_at)}</span>
+                    </div>
+                    <p class="text-[9px] leading-snug mb-0.5" style="color:#8b90a5">P: {shorten(extraction.prompt, 72)}</p>
+                    <p class="text-[9px] leading-snug mb-2" style="color:#4a4a5e">R: {shorten(extraction.result, 76)}</p>
+                    <div class="flex items-center gap-1.5">
+                      <button
+                        class="px-2 py-1 rounded text-[8px] font-mono transition-all"
+                        style="background:#18181e; border:1px solid #ffffff0d; color:#c9c9d9"
+                        onclick={() => void openExtractionDocument(extraction, false)}
+                      >
+                        Open
+                      </button>
+                      <button
+                        class="px-2 py-1 rounded text-[8px] font-mono transition-all"
+                        style="background:#00e5a014; border:1px solid #00e5a026; color:#00e5a0"
+                        onclick={() => void openExtractionDocument(extraction, true)}
+                      >
+                        Re-run
+                      </button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </div>
+      </div>
     </div>
   {/if}
 
@@ -2523,6 +2562,129 @@
     background: #1f2d46;
     border-color: #3b4f75;
     color: #f2f7ff;
+  }
+
+  .settings-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 58;
+    border: none;
+    background: rgba(4, 6, 10, 0.7);
+  }
+
+  .settings-dialog {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(94vw, 28rem);
+    max-height: 80vh;
+    border-radius: 1.15rem;
+    border: 1px solid #ffffff1f;
+    background: linear-gradient(160deg, #0f131c 0%, #121826 100%);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+    padding: 1rem;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .settings-dialog-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid #ffffff0d;
+  }
+
+  .settings-dialog-head h3 {
+    margin: 0;
+    color: #f1f4ff;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+
+  .settings-close-btn {
+    border: 1px solid #ffffff1f;
+    background: #171d2a;
+    color: #96a0bb;
+    border-radius: 0.5rem;
+    width: 1.8rem;
+    height: 1.8rem;
+    display: grid;
+    place-items: center;
+    transition: all 0.14s ease;
+  }
+
+  .settings-close-btn:hover {
+    border-color: #ffffff2f;
+    background: #1e253a;
+    color: #b8c4dc;
+  }
+
+  .settings-content {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+  }
+
+  .settings-content::-webkit-scrollbar {
+    width: 5px;
+  }
+
+  .settings-content::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .settings-content::-webkit-scrollbar-thumb {
+    background: #404558;
+    border-radius: 3px;
+  }
+
+  .settings-content::-webkit-scrollbar-thumb:hover {
+    background: #505666;
+  }
+
+  .settings-section {
+    margin-bottom: 1.5rem;
+  }
+
+  .settings-section:last-child {
+    margin-bottom: 0;
+  }
+
+  .settings-section-title {
+    margin: 0 0 0.75rem 0;
+    color: #e8ecf7;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .extraction-history-modal-scroll {
+    max-height: 340px;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+  }
+
+  .extraction-history-modal-scroll::-webkit-scrollbar {
+    width: 5px;
+  }
+
+  .extraction-history-modal-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .extraction-history-modal-scroll::-webkit-scrollbar-thumb {
+    background: #404558;
+    border-radius: 3px;
+  }
+
+  .extraction-history-modal-scroll::-webkit-scrollbar-thumb:hover {
+    background: #505666;
   }
 
   .extraction-history-scroll {

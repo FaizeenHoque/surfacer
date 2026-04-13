@@ -550,6 +550,7 @@ async function finalizeAssistantResponse(options: {
 
   if (!isFollowUp) {
     try {
+      sendEvent({ type: 'followup_loading', loading: true });
       const followUps = await generateFollowUpQuestions(
         apiKey,
         responseModel,
@@ -569,6 +570,8 @@ async function finalizeAssistantResponse(options: {
       debugLog(requestId, 'followup_generation_failed', {
         message: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      sendEvent({ type: 'followup_loading', loading: false });
     }
   }
 

@@ -40,7 +40,7 @@
 
   type Message =
     | { id: string; type: 'system'; text: string }
-    | { id: string; type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean; creditsUsed?: number; suggestedQuestions?: string[] }
+    | { id: string; type: 'ai'; content: string; reasoning?: string; timestamp: string; streaming?: boolean; creditsUsed?: number; suggestedQuestions?: string[]; followUpsLoading?: boolean }
     | { id: string; type: 'user'; content: string; timestamp: string };
 
   type StoredFile = {
@@ -697,7 +697,7 @@
     const now = formatTimestamp(new Date().toISOString());
     messages = [...messages, { id: makeMessageId('user'), type: 'user', content: text, timestamp: now }];
     const aiIndex = messages.length;
-    messages = [...messages, { id: makeMessageId('ai'), type: 'ai', content: '', reasoning: '', timestamp: now, streaming: true }];
+    messages = [...messages, { id: makeMessageId('ai'), type: 'ai', content: '', reasoning: '', timestamp: now, streaming: true, followUpsLoading: false }];
     isThinking = true;
     scrollToBottom();
 
@@ -786,6 +786,7 @@
             creditsUsed?: number;
             creditsRemaining?: number;
             suggestions?: string[];
+            loading?: boolean;
           };
           if (payload.type === 'reasoning' && payload.delta) {
             reasoning += payload.delta;
@@ -820,7 +821,22 @@
             if (target && target.type === 'ai') {
               next[aiIndex] = {
                 ...target,
+                followUpsLoading: false,
                 suggestedQuestions: payload.suggestions.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0),
+              };
+              messages = next;
+            }
+
+            return;
+          }
+
+          if (payload.type === 'followup_loading' && typeof payload.loading === 'boolean') {
+            const next = [...messages];
+            const target = next[aiIndex];
+            if (target && target.type === 'ai') {
+              next[aiIndex] = {
+                ...target,
+                followUpsLoading: payload.loading,
               };
               messages = next;
             }
@@ -892,6 +908,7 @@
           content,
           reasoning,
           streaming: false,
+          followUpsLoading: target.followUpsLoading ?? false,
         };
         messages = next;
       }
@@ -1294,6 +1311,17 @@
                       {/each}
                     </div>
                   </div>
+                {:else if msg.followUpsLoading}
+                  <div class="mt-3 rounded-2xl p-3" style="background:#111116; border:1px solid #ffffff0d">
+                    <div class="flex items-center gap-2 mb-2">
+                      <span class="text-[10px] font-mono uppercase tracking-[0.18em]" style="color:#4a4a5e">Suggested follow-ups</span>
+                    </div>
+                    <div class="flex flex-col gap-2">
+                      {#each [1, 2, 3] as row (row)}
+                        <div class="follow-up-skeleton"></div>
+                      {/each}
+                    </div>
+                  </div>
                 {/if}
                 <div class="flex items-center gap-2 mt-2.5">
                   {#each [
@@ -1571,6 +1599,15 @@
   .action-btn:hover { color: white !important; background: #18181e !important; border-color: #ffffff0d !important; }
   .input-box:focus-within { border-color: #ffffff16 !important; }
 
+  .follow-up-skeleton {
+    height: 2.55rem;
+    border-radius: 0.8rem;
+    border: 1px solid #ffffff0d;
+    background: linear-gradient(90deg, #18181e 0%, #232330 45%, #18181e 100%);
+    background-size: 220% 100%;
+    animation: skeletonPulse 1.2s ease-in-out infinite;
+  }
+
   .sidebar-backdrop {
     position: fixed;
     inset: 0;
@@ -1676,5 +1713,10 @@
       opacity: 1;
       transform: translateY(-2px);
     }
+  }
+
+  @keyframes skeletonPulse {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
   }
 </style>

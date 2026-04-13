@@ -82,6 +82,14 @@
   let isLoadingExtractions = $state(false);
   let extractionError = $state<string | null>(null);
   let extractionSearchTimer: ReturnType<typeof setTimeout> | null = null;
+  let notificationToast = $state<{ id: number; text: string; visible: boolean } | null>(null);
+  let toastHideTimer: ReturnType<typeof setTimeout> | null = null;
+  let toastRemoveTimer: ReturnType<typeof setTimeout> | null = null;
+  let exportMenuForId = $state<string | null>(null);
+  let shareDialogOpen = $state(false);
+  let shareDialogLoading = $state(false);
+  let shareDialogError = $state<string | null>(null);
+  let shareDialogUrl = $state<string | null>(null);
 
   // ── Init ────────────────────────────────────────────────────────────────────
   onMount(() => {
@@ -184,6 +192,12 @@
       viewport.removeEventListener('change', syncViewport);
       if (extractionSearchTimer) {
         clearTimeout(extractionSearchTimer);
+      }
+      if (toastHideTimer) {
+        clearTimeout(toastHideTimer);
+      }
+      if (toastRemoveTimer) {
+        clearTimeout(toastRemoveTimer);
       }
     };
   });
@@ -657,7 +671,21 @@
   }
 
   function notifySystem(text: string) {
-    messages = [...messages, { id: makeMessageId('system'), type: 'system', text }];
+    const id = Date.now();
+    notificationToast = { id, text, visible: true };
+
+    if (toastHideTimer) clearTimeout(toastHideTimer);
+    if (toastRemoveTimer) clearTimeout(toastRemoveTimer);
+
+    toastHideTimer = setTimeout(() => {
+      if (!notificationToast || notificationToast.id !== id) return;
+      notificationToast = { ...notificationToast, visible: false };
+      toastRemoveTimer = setTimeout(() => {
+        if (notificationToast?.id === id) {
+          notificationToast = null;
+        }
+      }, 220);
+    }, 3400);
   }
 
   async function copyAssistantMessage(msg: Extract<Message, { type: 'ai' }>) {
@@ -675,17 +703,10 @@
     }
   }
 
-  async function exportAssistantMessage(msg: Extract<Message, { type: 'ai' }>) {
+  async function exportAssistantMessage(msg: Extract<Message, { type: 'ai' }>, selected: 'csv' | 'json' | 'xlsx') {
     const text = msg.content?.trim() || '';
     if (!text) {
       notifySystem('No response to export yet.');
-      return;
-    }
-
-    const selected = (window.prompt('Choose export format: csv, json, or xlsx', 'csv') || '').trim().toLowerCase();
-    if (!selected) return;
-    if (!['csv', 'json', 'xlsx'].includes(selected)) {
-      notifySystem('Invalid format. Use csv, json, or xlsx.');
       return;
     }
 
@@ -714,6 +735,11 @@
     notifySystem('Excel export downloaded.');
   }
 
+  async function exportFromMenu(msg: Extract<Message, { type: 'ai' }>, selected: 'csv' | 'json' | 'xlsx') {
+    exportMenuForId = null;
+    await exportAssistantMessage(msg, selected);
+  }
+
   async function shareCurrentChat() {
     const token = await getAccessToken();
     if (!token) throw new Error('Session expired');
@@ -740,6 +766,23 @@
     return payload.shareUrl as string;
   }
 
+  async function copyShareLink() {
+    if (!shareDialogUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareDialogUrl);
+      notifySystem('Share link copied to clipboard.');
+    } catch {
+      notifySystem('Clipboard permission denied.');
+    }
+  }
+
+  function closeShareDialog() {
+    shareDialogOpen = false;
+    shareDialogLoading = false;
+    shareDialogError = null;
+    shareDialogUrl = null;
+  }
+
   async function shareChatAction() {
     try {
       if (!messages.length) {
@@ -747,21 +790,25 @@
         return;
       }
 
+      shareDialogOpen = true;
+      shareDialogLoading = true;
+      shareDialogError = null;
+      shareDialogUrl = null;
+
       const shareUrl = await shareCurrentChat();
+      shareDialogUrl = shareUrl;
 
-      if (navigator.share) {
-        await navigator.share({
-          title: activeFileName || 'Shared Surfacer chat',
-          text: 'Shared Surfacer chat',
-          url: shareUrl,
-        });
-      } else {
+      try {
         await navigator.clipboard.writeText(shareUrl);
+        notifySystem('Share link ready and copied to clipboard.');
+      } catch {
+        notifySystem('Share link ready.');
       }
-
-      notifySystem('Share link ready. It was copied to your clipboard if native sharing was unavailable.');
     } catch (err: unknown) {
-      notifySystem(err instanceof Error ? err.message : 'Failed to share chat');
+      shareDialogError = err instanceof Error ? err.message : 'Failed to share chat';
+      notifySystem(shareDialogError);
+    } finally {
+      shareDialogLoading = false;
     }
   }
 
@@ -1940,12 +1987,27 @@
                     </svg>
                     Copy
                   </button>
-                  <button class="action-btn flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono transition-all" style="color:#4a4a5e; border:1px solid transparent" onclick={() => void exportAssistantMessage(msg)}>
-                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                    </svg>
-                    CSV
-                  </button>
+                  <div class="relative">
+                    <button
+                      class="action-btn flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono transition-all"
+                      style="color:#4a4a5e; border:1px solid transparent"
+                      onclick={() => {
+                        exportMenuForId = exportMenuForId === msg.id ? null : msg.id;
+                      }}
+                    >
+                      <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                      </svg>
+                      Download as
+                    </button>
+                    {#if exportMenuForId === msg.id}
+                      <div class="export-menu rounded-xl p-1.5" style="background:#111116; border:1px solid #ffffff14">
+                        <button class="export-menu-item" onclick={() => void exportFromMenu(msg, 'csv')}>CSV</button>
+                        <button class="export-menu-item" onclick={() => void exportFromMenu(msg, 'json')}>JSON</button>
+                        <button class="export-menu-item" onclick={() => void exportFromMenu(msg, 'xlsx')}>Excel (.xlsx)</button>
+                      </div>
+                    {/if}
+                  </div>
                   <button class="action-btn flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono transition-all" style="color:#4a4a5e; border:1px solid transparent" onclick={() => void shareChatAction()}>
                     <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
@@ -2014,6 +2076,40 @@
       </p>
     </div>
   </main>
+
+  {#if notificationToast}
+    <div class="toast-shell" class:toast-hidden={!notificationToast.visible} role="status" aria-live="polite">
+      <div class="w-1.5 h-1.5 rounded-full" style="background:#00e5a0"></div>
+      <span>{notificationToast.text}</span>
+    </div>
+  {/if}
+
+  {#if shareDialogOpen}
+    <button class="share-dialog-backdrop" aria-label="Close share dialog" onclick={closeShareDialog}></button>
+    <div class="share-dialog" role="dialog" aria-modal="true" aria-label="Share chat">
+      <div class="share-dialog-head">
+        <h3>Share chat</h3>
+        <button class="share-close-btn" onclick={closeShareDialog} aria-label="Close share dialog">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      {#if shareDialogLoading}
+        <p class="share-dialog-note">Creating secure link...</p>
+      {:else if shareDialogError}
+        <p class="share-dialog-error">{shareDialogError}</p>
+      {:else if shareDialogUrl}
+        <p class="share-dialog-note">Anyone with this link can view the shared snapshot.</p>
+        <div class="share-link-box">{shareDialogUrl}</div>
+        <div class="share-actions">
+          <button class="share-action-btn" onclick={() => void copyShareLink()}>Copy link</button>
+          <button class="share-action-btn" onclick={() => shareDialogUrl && window.open(shareDialogUrl, '_blank', 'noopener,noreferrer')}>Open link</button>
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   {#if isBillingModalOpen}
     <button class="fixed inset-0 z-40" style="background:rgba(5,7,10,0.68)" onclick={closeBillingModal} aria-label="Close billing modal"></button>
@@ -2277,6 +2373,157 @@
   .chip:hover { border-color: #00e5a026 !important; color: #00e5a0 !important; background: #00e5a014 !important; }
   .action-btn:hover { color: white !important; background: #18181e !important; border-color: #ffffff0d !important; }
   .input-box:focus-within { border-color: #ffffff16 !important; }
+
+  .export-menu {
+    position: absolute;
+    top: calc(100% + 0.35rem);
+    left: 0;
+    min-width: 9.6rem;
+    z-index: 24;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+  }
+
+  .export-menu-item {
+    width: 100%;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #c7cbe0;
+    border-radius: 0.55rem;
+    text-align: left;
+    padding: 0.38rem 0.55rem;
+    font-size: 0.68rem;
+    font-family: 'JetBrains Mono', monospace;
+    transition: all 0.14s ease;
+  }
+
+  .export-menu-item:hover {
+    border-color: #ffffff1c;
+    background: #1a1a24;
+    color: #ffffff;
+  }
+
+  .toast-shell {
+    position: fixed;
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 70;
+    max-width: min(92vw, 24rem);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    border: 1px solid #00e5a03a;
+    background: #0f1714;
+    color: #c4fce6;
+    border-radius: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    font-size: 0.72rem;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.01em;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.4);
+    opacity: 1;
+    transform: translateY(0);
+    transition: opacity 0.22s ease, transform 0.22s ease;
+  }
+
+  .toast-hidden {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  .share-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 58;
+    border: none;
+    background: rgba(4, 6, 10, 0.7);
+  }
+
+  .share-dialog {
+    position: fixed;
+    right: 1rem;
+    bottom: 1rem;
+    width: min(92vw, 25rem);
+    border-radius: 1rem;
+    border: 1px solid #ffffff1f;
+    background: linear-gradient(160deg, #0f131c 0%, #121826 100%);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+    padding: 0.95rem;
+    z-index: 60;
+  }
+
+  .share-dialog-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+  }
+
+  .share-dialog-head h3 {
+    margin: 0;
+    color: #f1f4ff;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .share-close-btn {
+    border: 1px solid #ffffff1f;
+    background: #171d2a;
+    color: #96a0bb;
+    border-radius: 0.5rem;
+    width: 1.8rem;
+    height: 1.8rem;
+    display: grid;
+    place-items: center;
+  }
+
+  .share-dialog-note {
+    margin: 0;
+    color: #99a3bf;
+    font-size: 0.72rem;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .share-dialog-error {
+    margin: 0;
+    color: #fecaca;
+    font-size: 0.72rem;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .share-link-box {
+    margin-top: 0.55rem;
+    background: #0a0f18;
+    border: 1px solid #ffffff14;
+    border-radius: 0.65rem;
+    color: #c6d0ea;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem;
+    word-break: break-all;
+    padding: 0.55rem 0.62rem;
+  }
+
+  .share-actions {
+    margin-top: 0.65rem;
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .share-action-btn {
+    border: 1px solid #2a364f;
+    background: #172033;
+    color: #cfe2ff;
+    border-radius: 0.62rem;
+    font-size: 0.68rem;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 0.45rem 0.68rem;
+    transition: all 0.14s ease;
+  }
+
+  .share-action-btn:hover {
+    background: #1f2d46;
+    border-color: #3b4f75;
+    color: #f2f7ff;
+  }
 
   .extraction-history-scroll {
     max-height: 260px;

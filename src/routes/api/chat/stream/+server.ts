@@ -432,7 +432,7 @@ async function finalizeAssistantResponse(options: {
   const trimmedResponse = assistantResponse.trim();
   if (!trimmedResponse) return currentCredits;
 
-  await appendChatMessage(supabase, sessionId, userId, 'assistant', trimmedResponse);
+  await appendChatMessage(supabase, sessionId, userId, 'assistant', trimmedResponse, responseCost);
   await saveExtractionRun(supabase, {
     userId,
     chatId: sessionId,

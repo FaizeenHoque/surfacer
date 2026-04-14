@@ -13,6 +13,7 @@ import {
   getSubscriptionById,
   isSubscriptionActiveLike,
 } from '$lib/server/dodoBilling';
+import { getCreditPacks } from '$lib/server/billing';
 
 export const GET: RequestHandler = async ({ request }) => {
   try {
@@ -46,6 +47,13 @@ export const GET: RequestHandler = async ({ request }) => {
       }
     }
 
+    // Get product name from credit packs
+    const packs = getCreditPacks();
+    const matchingPack = subscription && subscription.product_id 
+      ? packs.find(pack => pack.productId === subscription.product_id)
+      : null;
+    const productName = matchingPack?.label || subscription?.status || null;
+
     return json({
       hasActiveSubscription: Boolean(subscription && isSubscriptionActiveLike(subscription)),
       subscription: subscription
@@ -53,6 +61,7 @@ export const GET: RequestHandler = async ({ request }) => {
             id: subscription.subscription_id,
             status: subscription.status,
             productId: subscription.product_id || null,
+            productName: productName,
             nextBillingDate: subscription.next_billing_date || null,
             cancelAtNextBillingDate: Boolean(subscription.cancel_at_next_billing_date),
           }

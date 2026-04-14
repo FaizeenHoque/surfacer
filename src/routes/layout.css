@@ -1,3 +1,74 @@
 @import 'tailwindcss';
 @plugin '@tailwindcss/forms';
 @plugin '@tailwindcss/typography';
+
+/* Global Select/Dropdown Styles */
+select {
+  background-color: #09090d;
+  border-color: #ffffff0d;
+  color: #c9c9d9;
+  transition: all 0.2s ease;
+}
+
+select:hover {
+  background-color: #0f0f15;
+  border-color: #ffffff14;
+}
+
+select:focus,
+select:focus-visible {
+  background-color: #09090d;
+  border-color: #00e5a0;
+  outline: none;
+  box-shadow: 0 0 0 2px #00e5a01a;
+}
+
+select:active {
+  background-color: #09090d;
+  border-color: #00e5a0;
+}
+
+/* Style for option elements (dropdown items) */
+select option {
+  background-color: #18181e;
+  color: #c9c9d9;
+  padding: 8px 12px;
+}
+
+select option:hover {
+  background-color: #00e5a0;
+  color: #09090d;
+}
+
+select option:checked {
+  background: linear-gradient(#00e5a0, #00e5a0);
+  background-color: #00e5a0;
+  color: #09090d;
+}
+
+/* Global Button Hover Effects */
+button {
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+}
+
+/* Specific button styles for different contexts */
+button[onclick*="settingsMenuTab"],
+button[onclick*="handleLogout"],
+button[onclick*="messages = []"],
+button[title] {
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+/* Clear Chat button specific hover */
+button[title="Clear chat"]:hover {
+  background-color: #ffffff14;
+}
+
+button[title="Clear chat"]:active {
+  background-color: #ffffff0d;
+}
+

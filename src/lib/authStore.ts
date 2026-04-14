@@ -35,6 +35,7 @@ export interface ActiveSubscriptionStatus {
   id: string;
   status: string;
   productId: string | null;
+  productName: string | null;
   nextBillingDate: string | null;
   cancelAtNextBillingDate: boolean;
 }

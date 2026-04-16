@@ -15,6 +15,12 @@ import {
   saveExtractionRun,
   setUserCredits,
 } from '$lib/server/chats';
+import { tryShortCircuit, logShortCircuit } from '$lib/server/shortCircuit';
+import { semanticCache } from '$lib/server/semanticCache';
+import { compressAndCapContext } from '$lib/server/promptCompression';
+import { calculateRequestTokens, calculateTokenWeightedCost } from '$lib/server/tokenCounting';
+import { deductCreditsAtomic } from '$lib/server/creditDeduction';
+import { updateFileHeartbeat, logHeartbeatUpdate } from '$lib/server/heartbeatLifecycle';
 
 const ALLOWED_MODELS = new Set([
   'microsoft/Phi-4',
@@ -410,6 +416,8 @@ async function finalizeAssistantResponse(options: {
   isFollowUp: boolean;
   requestId: string;
   sendEvent: (payload: Record<string, unknown>) => void;
+  inputTokens: number;
+  outputTokens: number;
 }) {
   const {
     supabase,
@@ -427,6 +435,8 @@ async function finalizeAssistantResponse(options: {
     isFollowUp,
     requestId,
     sendEvent,
+    inputTokens,
+    outputTokens,
   } = options;
 
   const trimmedResponse = assistantResponse.trim();
@@ -441,13 +451,46 @@ async function finalizeAssistantResponse(options: {
     prompt: originalQuestion,
     result: trimmedResponse,
   });
-  const creditsRemaining = await setUserCredits(supabase, userId, currentCredits - responseCost);
+
+  // Atomically deduct credits with token-weighted calculation
+  const deductionResult = await deductCreditsAtomic(supabase, {
+    userId,
+    model: responseModel,
+    inputTokens,
+    outputTokens,
+    metadata: {
+      requestId,
+      chatId: sessionId,
+      filePath,
+    },
+  });
+
+  if (deductionResult.error) {
+    console.error(`[credit-deduction:${requestId}] Failed: ${deductionResult.error}`);
+    // Notify client of deduction failure but don't block response
+  }
 
   sendEvent({
     type: 'usage',
-    creditsUsed: responseCost,
-    creditsRemaining,
+    creditsUsed: deductionResult.deducted,
+    creditsRemaining: deductionResult.remainingCredits,
   });
+
+  debugLog(requestId, 'credit_deducted', {
+    deducted: deductionResult.deducted,
+    remaining: deductionResult.remainingCredits,
+    atomic: deductionResult.atomic,
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════
+  // COST OPTIMIZATION LAYER: Heartbeat Lifecycle (ISO 8601 TTL Extension - Phase 2)
+  // ════════════════════════════════════════════════════════════════════════════════
+  // Update file heartbeat to extend TTL - indicates file is in active use
+  // Gracefully handles both Phase 1 (no TTL) and Phase 2 (with expires_at) systems
+  const heartbeatResult = await updateFileHeartbeat(supabase, filePath, userId, 365);
+  if (heartbeatResult.updated) {
+    logHeartbeatUpdate(filePath, heartbeatResult, requestId);
+  }
 
   if (!isFollowUp) {
     try {
@@ -476,7 +519,38 @@ async function finalizeAssistantResponse(options: {
     }
   }
 
-  return creditsRemaining;
+  // ════════════════════════════════════════════════════════════════════════════════
+  // SEMANTIC CACHE: Store answer for future retrieval
+  // ════════════════════════════════════════════════════════════════════════════════
+  try {
+    const { getQueryEmbedding } = await import('$lib/server/embeddingHelper');
+    const queryEmbedding = await getQueryEmbedding(originalQuestion);
+    
+    if (queryEmbedding) {
+      await semanticCache.store(
+        queryEmbedding,
+        originalQuestion,
+        trimmedResponse,
+        userId,
+        filePath,
+        fileName,
+        responseModel
+      );
+      
+      debugLog(requestId, 'semantic_cache_stored', {
+        filePath,
+        queryLength: originalQuestion.length,
+        answerLength: trimmedResponse.length,
+      });
+    }
+  } catch (cacheErr) {
+    debugLog(requestId, 'semantic_cache_store_failed', {
+      error: cacheErr instanceof Error ? cacheErr.message : 'Unknown error',
+    });
+    // Silently fail - cache is optional optimization
+  }
+
+  return deductionResult.remainingCredits;
 }
 
 function normalizeDeltaText(value: unknown) {
@@ -674,6 +748,80 @@ export const POST: RequestHandler = async ({ request }) => {
       return json({ error: 'Message is required' }, { status: 400 });
     }
 
+    // Extract fileName early for use in all paths
+    const fileName = fileNameFromPath(filePath);
+
+    // ════════════════════════════════════════════════════════════════════════════════
+    // COST OPTIMIZATION LAYER: Zero-Token Short-Circuit
+    // ════════════════════════════════════════════════════════════════════════════════
+    const shortCircuitResult = tryShortCircuit(message);
+    if (shortCircuitResult.triggered) {
+      logShortCircuit(user.id, shortCircuitResult.type, message, requestId);
+      debugLog(requestId, 'short_circuit_triggered', {
+        type: shortCircuitResult.type,
+        savesCost: '$0.00',
+      });
+
+      // Return hardcoded response with no LLM call or credit deduction
+      const encoder = new TextEncoder();
+      return new Response(
+        new ReadableStream({
+          async start(controller) {
+            try {
+              const sendEvent = (payload: Record<string, unknown>) => {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+              };
+
+              controller.enqueue(encoder.encode(': stream-open\n\n'));
+              
+              // Stream the hardcoded response
+              sendEvent({
+                type: 'content',
+                delta: shortCircuitResult.response || 'Hello!',
+              });
+
+              // Save user message to history
+              const session = await getOrCreateChatSession(supabase, user.id, filePath, fileName);
+              await appendChatMessage(supabase, session.id, user.id, 'user', message);
+              
+              // Save hardcoded response without charging
+              const assistantContent = shortCircuitResult.response || '';
+              if (assistantContent.trim()) {
+                await appendChatMessage(supabase, session.id, user.id, 'assistant', assistantContent);
+              }
+
+              // No credits deducted - return current balance as-is
+              const currentCredits = await getUserCredits(supabase, user.id);
+              sendEvent({
+                type: 'usage',
+                creditsUsed: 0,
+                creditsRemaining: currentCredits,
+              });
+
+              sendEvent({ type: 'done' });
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            } catch (err: unknown) {
+              const errMessage = err instanceof Error ? err.message : 'Short-circuit response failed';
+              controller.error(new Error(errMessage));
+            }
+          },
+        }),
+        {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          },
+        }
+      );
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════════
+    // END: Zero-Token Short-Circuit
+    // ════════════════════════════════════════════════════════════════════════════════
+
     const rateLimit = acquireChatRateLimit(user.id);
     if (!rateLimit.allowed) {
       return json(
@@ -695,7 +843,6 @@ export const POST: RequestHandler = async ({ request }) => {
       return json({ error: 'Invalid file path' }, { status: 403 });
     }
 
-    const fileName = fileNameFromPath(filePath);
     let cachedFile = getCachedFileText(filePath);
     let fileText = cachedFile?.text || null;
     let pageCount = cachedFile?.pageCount || 0;
@@ -744,19 +891,98 @@ export const POST: RequestHandler = async ({ request }) => {
       pageCount = estimatePageCountFromText(fileText || '');
     }
 
-    const estimatedCost = isFollowUp ? FOLLOW_UP_CREDIT_COST : calculateCreditCost(pageCount, model);
+    // ════════════════════════════════════════════════════════════════════════════════
+    // COST OPTIMIZATION LAYER: Token-Weighted Cost Calculation
+    // ════════════════════════════════════════════════════════════════════════════════
     const currentCredits = await getUserCredits(supabase, user.id);
+    
+    // Build projected chat messages for token counting
+    const maxContextChars = 28000;
+    const promptContext = fileText.slice(0, maxContextChars);
+    const session = await getOrCreateChatSession(supabase, user.id, filePath, fileName);
+    const priorMessages = (await listChatMessages(supabase, session.id)).slice(-MAX_CONTEXT_MESSAGES);
+    
+    const projectedMessages = [
+      {
+        role: 'system' as const,
+        content:
+          'You are Surfacer, a strict document-grounded assistant. Answer only using the provided file excerpts and chat history. If the user asks anything not supported by that context, reply exactly: "I cannot answer that from this document." Never use outside knowledge, never guess, and do not invent facts. Keep responses in clean Markdown with short headings, bullet points, and tables when useful. Use LaTeX for math. Do not output raw JSON.',
+      },
+      {
+        role: 'user' as const,
+        content: `File name: ${fileName}\n\nRelevant file excerpts:\n${promptContext}`,
+      },
+      ...priorMessages.map((entry) => ({
+        role: entry.role as 'user' | 'assistant',
+        content: entry.content,
+      })),
+      {
+        role: 'user' as const,
+        content: `Question: ${message}`,
+      },
+    ];
+    
+    // Apply compression to context if user has low credits
+    let contextChunks = promptContext.split('\n\n').filter(Boolean);
+    if (currentCredits < 2) {
+      // Critical low-credit scenario: compress and cap context
+      const compressed = compressAndCapContext(
+        contextChunks,
+        currentCredits,
+        0.06 // Average credit cost per 1K tokens
+      );
+      contextChunks = compressed.chunks;
+      debugLog(requestId, 'context_capping_triggered', {
+        originalChunks: promptContext.split('\n\n').length,
+        compressedChunks: contextChunks.length,
+        saving: `${compressed.overallSavings.toFixed(1)}%`,
+      });
+    }
+    
+    // Reconstruct prompt with compressed context
+    const compressedPrompt = contextChunks.join('\n\n');
+    projectedMessages[1].content = `File name: ${fileName}\n\nRelevant file excerpts:\n${compressedPrompt}`;
+    
+    // Calculate token-weighted cost
+    const tokenCount = calculateRequestTokens({
+      messages: projectedMessages,
+      maxCompletionTokens: 1024,
+      model,
+    });
+    
+    const estimatedCost = calculateTokenWeightedCost(
+      tokenCount.inputTokens,
+      tokenCount.outputTokens,
+      model,
+      {
+        inputWeight: 0.03,  // $0.03 per 1K input tokens
+        outputWeight: 0.06, // $0.06 per 1K output tokens
+        baseWeight: 0.01,   // $0.01 base cost
+      }
+    );
+
+    debugLog(requestId, 'cost_calculation', {
+      model,
+      inputTokens: tokenCount.inputTokens,
+      outputTokens: tokenCount.outputTokens,
+      estimatedCost,
+      currentCredits,
+      sufficient: currentCredits >= estimatedCost,
+    });
 
     if (currentCredits < estimatedCost) {
       rateLimitLease.release();
       rateLimitLease = null;
       return json(
         {
-          error: `Not enough credits. Required: ${estimatedCost}, available: ${currentCredits}.`,
+          error: `Not enough credits. Required: ${estimatedCost.toFixed(2)}, available: ${currentCredits.toFixed(2)}.`,
         },
         { status: 402 }
       );
     }
+    // ════════════════════════════════════════════════════════════════════════════════
+    // END: Token-Weighted Cost Calculation
+    // ════════════════════════════════════════════════════════════════════════════════
 
     const apiKey = env.GITHUB_TOKEN || '';
     if (!apiKey) {
@@ -765,38 +991,104 @@ export const POST: RequestHandler = async ({ request }) => {
       return json({ error: 'Missing GITHUB_TOKEN' }, { status: 500 });
     }
 
-    const maxContextChars = 28000;
-    const promptContext = fileText.slice(0, maxContextChars);
-    const session = await getOrCreateChatSession(supabase, user.id, filePath, fileName);
-    const priorMessages = (await listChatMessages(supabase, session.id)).slice(-MAX_CONTEXT_MESSAGES);
-
+    // Store message in history
     await appendChatMessage(supabase, session.id, user.id, 'user', message);
 
-    const chatMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-      {
-        role: 'system',
-        content:
-          'You are Surfacer, a strict document-grounded assistant. Answer only using the provided file excerpts and chat history. If the user asks anything not supported by that context, reply exactly: "I cannot answer that from this document." Never use outside knowledge, never guess, and do not invent facts. Keep responses in clean Markdown with short headings, bullet points, and tables when useful. Use LaTeX for math. Do not output raw JSON.',
-      },
-      {
-        role: 'user',
-        content: `File name: ${fileName}\n\nRelevant file excerpts:\n${promptContext}`,
-      },
-      ...priorMessages.map((entry) => ({
-        role: entry.role,
-        content: entry.content,
-      })),
-      {
-        role: 'user',
-        content: `Question: ${message}`,
-      },
-    ];
+    // Use the already-calculated compressed prompt
+    const chatMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = projectedMessages;
 
     let assistantResponse = '';
     let responseModel = model;
     let streamCompleted = false;
 
     try {
+      // ════════════════════════════════════════════════════════════════════════════════
+      // SEMANTIC CACHE CHECK: Attempt to retrieve cached answer before LLM call
+      // ════════════════════════════════════════════════════════════════════════════════
+      
+      // Try to generate embedding for the current user message
+      const { getQueryEmbedding } = await import('$lib/server/embeddingHelper');
+      const userMessage = chatMessages[chatMessages.length - 1]?.content || '';
+      const queryEmbedding = await getQueryEmbedding(userMessage);
+
+      let cachedResult: { hit: boolean; answer?: string; similarity?: number } | null = null;
+      if (queryEmbedding) {
+        try {
+          cachedResult = await semanticCache.querySimilar(
+            queryEmbedding,
+            user.id,
+            filePath
+          );
+          
+          if (cachedResult?.hit) {
+            debugLog(requestId, 'semantic_cache_hit', {
+              filePath,
+              similarity: cachedResult.similarity,
+              cacheAge: new Date().toISOString(),
+            });
+          }
+        } catch (cacheErr) {
+          debugLog(requestId, 'semantic_cache_query_failed', {
+            error: cacheErr instanceof Error ? cacheErr.message : 'Unknown error',
+          });
+          // Continue without cache if query fails
+        }
+      }
+
+      // If cache hit, return cached answer without LLM call
+      if (cachedResult?.hit) {
+        debugLog(requestId, 'returning_cached_answer', {
+          filePath,
+          savesCost: '$0.00',
+        });
+
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            async start(controller) {
+              try {
+                const sendEvent = (payload: Record<string, unknown>) => {
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+                };
+
+                controller.enqueue(encoder.encode(': stream-open\n\n'));
+                
+                // Stream cached response
+                sendEvent({ type: 'content', delta: cachedResult.answer || '' });
+                sendEvent({
+                  type: 'finish',
+                  finishReason: 'cache_hit',
+                  model: responseModel,
+                  usage: {
+                    promptTokens: 0,
+                    completionTokens: 0,
+                    totalTokens: 0,
+                  },
+                });
+
+                controller.close();
+              } catch (err) {
+                const errMessage = err instanceof Error ? err.message : 'Stream error';
+                console.error(`[${requestId}] Stream error:`, errMessage);
+                controller.error(new Error(errMessage));
+              }
+            },
+          }),
+          {
+            headers: {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+              'Cache-Control': 'no-cache, no-transform',
+              Connection: 'keep-alive',
+              'X-Accel-Buffering': 'no',
+            },
+          }
+        );
+      }
+
+      // ════════════════════════════════════════════════════════════════════════════════
+      // No cache hit: proceed with LLM call
+      // ════════════════════════════════════════════════════════════════════════════════
+
       const encoder = new TextEncoder();
       const stream = await createChatCompletion(apiKey, model, chatMessages, requestId);
 
@@ -844,11 +1136,13 @@ export const POST: RequestHandler = async ({ request }) => {
                   currentCredits,
                   responseCost,
                   responseModel,
-                  promptContext,
+                  promptContext: compressedPrompt,
                   originalQuestion: message,
                   isFollowUp,
                   requestId,
                   sendEvent,
+                  inputTokens: tokenCount.inputTokens,
+                  outputTokens: tokenCount.outputTokens,
                 });
               }
 
@@ -949,11 +1243,13 @@ export const POST: RequestHandler = async ({ request }) => {
                   currentCredits,
                   responseCost,
                   responseModel,
-                  promptContext,
+                  promptContext: compressedPrompt,
                   originalQuestion: message,
                   isFollowUp,
                   requestId,
                   sendEvent,
+                  inputTokens: tokenCount.inputTokens,
+                  outputTokens: tokenCount.outputTokens,
                 });
               }
 

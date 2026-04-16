@@ -1774,6 +1774,13 @@
         </div>
       {/if}
       
+      {#if !activeSubscription}
+        <div class="px-3 py-2 rounded-lg" style="background:#00e5a008">
+          <p class="text-[10px] font-mono" style="color:#7a7f9f">Current plan</p>
+          <p class="text-xs font-semibold text-white capitalize mt-0.5">Free</p>
+        </div>
+      {/if}
+      
       <!-- Credits -->
       <div class="px-3 py-2.5 rounded-lg" style="background:#18181e; border:1px solid #ffffff0d">
         <div class="flex items-center justify-between mb-1.5">

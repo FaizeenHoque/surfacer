@@ -93,6 +93,7 @@
   let isSettingsWindowOpen = $state(false);
   let settingsMenuTab = $state<'general' | 'privacy'>('general');
   let isSettingsMenuOpen = $state(false);
+  let openDropdowns = $state<{ [key: string]: boolean }>({});
 
   // ── Init ────────────────────────────────────────────────────────────────────
   onMount(() => {
@@ -191,8 +192,19 @@
 
     void init();
 
+    // Close dropdowns when clicking outside
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest('[data-dropdown]')) {
+        openDropdowns = {};
+      }
+    };
+
+    document.addEventListener('click', handleClickOutside);
+
     return () => {
       viewport.removeEventListener('change', syncViewport);
+      document.removeEventListener('click', handleClickOutside);
       if (extractionSearchTimer) {
         clearTimeout(extractionSearchTimer);
       }
@@ -868,7 +880,7 @@
     activeChatId = payload.chatId || null;
     const history = Array.isArray(payload.messages) ? payload.messages : [];
     messages = history.length
-      ? history.map((entry: { id?: string; role: string; content: string; created_at: string }) => {
+      ? history.map((entry: { id?: string; role: string; content: string; created_at: string; credits_used?: number | null }) => {
           if (entry.role === 'assistant') {
             return {
               id: entry.id || makeMessageId('ai'),
@@ -876,6 +888,7 @@
               content: entry.content,
               timestamp: formatTimestamp(entry.created_at),
               streaming: false,
+              creditsUsed: entry.credits_used ?? undefined,
             };
           }
 
@@ -1901,26 +1914,41 @@
                         <div class="space-y-6">
                           <!-- Model Selection -->
                           <div>
-                            <label for="model-select" class="text-sm font-semibold text-white block mb-2">Model</label>
-                            <select
-                              id="model-select"
-                              bind:value={selectedModel}
-                              class="global-select w-full px-4 py-2.5 rounded-lg text-sm font-mono text-white transition-all"
-                            >
-                              {#each modelOptions as model (model.value)}
-                                <option value={model.value}>{model.label}</option>
-                              {/each}
-                            </select>
+                            <label class="text-sm font-semibold text-white block mb-2">Model</label>
+                            <div class="relative" data-dropdown>
+                              <button
+                                onclick={() => { openDropdowns.settingsModelSelect = !openDropdowns.settingsModelSelect; }}
+                                class="w-full flex items-center justify-between px-4 py-2.5 rounded-lg text-sm font-mono border transition-all"
+                                style="background:{selectedModel === 'microsoft/Phi-4' ? '#00e5a015' : '#ffffff08'}; border-color:{openDropdowns.settingsModelSelect ? '#00e5a0' : '#ffffff1a'}; color:{selectedModel === 'microsoft/Phi-4' ? '#00e5a0' : '#c9c9d9'}"
+                              >
+                                <span>{modelOptions.find(m => m.value === selectedModel)?.label || 'Select'}</span>
+                                <svg class="w-4 h-4 transition-transform" style="transform:{openDropdowns.settingsModelSelect ? 'rotate(180deg)' : 'rotate(0)'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+                                </svg>
+                              </button>
+                              {#if openDropdowns.settingsModelSelect}
+                                <div class="absolute top-full mt-2 left-0 right-0 rounded-lg border z-50" style="background:#18181e; border-color:#ffffff1a">
+                                  {#each modelOptions as option (option.value)}
+                                    <button
+                                      onclick={() => { selectedModel = option.value; openDropdowns.settingsModelSelect = false; }}
+                                      class="w-full text-left px-4 py-2.5 text-sm font-mono transition-all first:rounded-t-lg last:rounded-b-lg"
+                                      style="background:{selectedModel === option.value ? '#00e5a0' : 'transparent'}; color:{selectedModel === option.value ? '#09090d' : '#c9c9d9'}"
+                                    >
+                                      {option.label}
+                                    </button>
+                                  {/each}
+                                </div>
+                              {/if}
+                            </div>
                           </div>
 
                           <!-- Reasoning Toggle -->
                           <div class="flex items-center justify-between">
                             <div>
-                              <label for="reasoning-toggle" class="text-sm font-semibold text-white block">AI Reasoning</label>
+                              <label class="text-sm font-semibold text-white block">AI Reasoning</label>
                               <p class="text-xs font-mono mt-1" style="color:#7a7f9f">Show AI's internal reasoning process</p>
                             </div>
                             <button
-                              id="reasoning-toggle"
                               aria-label="Toggle AI reasoning visibility"
                               onclick={() => { reasoningVisibility = reasoningVisibility === 'hide' ? 'show' : 'hide'; }}
                               class="px-4 py-2 rounded-lg text-sm font-semibold transition-all sharink-0"
@@ -2054,22 +2082,68 @@
 
       <div class="flex items-center gap-3">
         <div class="flex items-center gap-2">
-          <select
-            bind:value={selectedModel}
-            class="global-select model-select desktop-only px-3 py-1.5 rounded-lg text-xs font-mono"
-          >
-            {#each modelOptions as model (model.value)}
-              <option value={model.value}>{model.label}</option>
-            {/each}
-          </select>
+          <!-- Model Selector Dropdown -->
+          <div class="relative desktop-only" data-dropdown>
+            <button
+              onclick={() => { openDropdowns.modelSelect = !openDropdowns.modelSelect; }}
+              class="flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-mono border transition-all"
+              style="background:{selectedModel === 'microsoft/Phi-4' ? '#00e5a015' : '#ffffff08'}; border-color:{openDropdowns.modelSelect ? '#00e5a0' : '#ffffff1a'}; color:{selectedModel === 'microsoft/Phi-4' ? '#00e5a0' : '#8b90a5'}"
+            >
+              <span>
+                {modelOptions.find(m => m.value === selectedModel)?.label || 'Select'}
+              </span>
+              <svg class="w-3 h-3 ml-2 transition-transform" style="transform:{openDropdowns.modelSelect ? 'rotate(180deg)' : 'rotate(0)'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+              </svg>
+            </button>
+            {#if openDropdowns.modelSelect}
+              <div class="absolute top-full mt-2 left-0 rounded-lg border min-w-max z-50" style="background:#18181e; border-color:#ffffff1a">
+                {#each modelOptions as option (option.value)}
+                  <button
+                    onclick={() => { selectedModel = option.value; openDropdowns.modelSelect = false; }}
+                    class="w-full text-left px-3 py-2 text-xs font-mono transition-all first:rounded-t-lg last:rounded-b-lg"
+                    style="background:{selectedModel === option.value ? '#00e5a0' : 'transparent'}; color:{selectedModel === option.value ? '#09090d' : '#c9c9d9'}"
+                  >
+                    {option.label}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
 
-          <select
-            bind:value={reasoningVisibility}
-            class="global-select model-select desktop-only px-3 py-1.5 rounded-lg text-xs font-mono"
-          >
-            <option value="hide">Reasoning: hidden</option>
-            <option value="show">Reasoning: shown</option>
-          </select>
+          <!-- Reasoning Visibility Dropdown -->
+          <div class="relative desktop-only" data-dropdown>
+            <button
+              onclick={() => { openDropdowns.reasoningSelect = !openDropdowns.reasoningSelect; }}
+              class="flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-mono border transition-all"
+              style="background:{reasoningVisibility === 'show' ? '#00e5a015' : '#ffffff08'}; border-color:{openDropdowns.reasoningSelect ? '#00e5a0' : '#ffffff1a'}; color:{reasoningVisibility === 'show' ? '#00e5a0' : '#8b90a5'}"
+            >
+              <span>
+                Reasoning: {reasoningVisibility === 'show' ? 'shown' : 'hidden'}
+              </span>
+              <svg class="w-3 h-3 ml-2 transition-transform" style="transform:{openDropdowns.reasoningSelect ? 'rotate(180deg)' : 'rotate(0)'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+              </svg>
+            </button>
+            {#if openDropdowns.reasoningSelect}
+              <div class="absolute top-full mt-2 left-0 rounded-lg border min-w-max z-50" style="background:#18181e; border-color:#ffffff1a">
+                <button
+                  onclick={() => { reasoningVisibility = 'hide'; openDropdowns.reasoningSelect = false; }}
+                  class="w-full text-left px-3 py-2 text-xs font-mono transition-all rounded-t-lg"
+                  style="background:{reasoningVisibility === 'hide' ? '#00e5a0' : 'transparent'}; color:{reasoningVisibility === 'hide' ? '#09090d' : '#c9c9d9'}"
+                >
+                  Reasoning: hidden
+                </button>
+                <button
+                  onclick={() => { reasoningVisibility = 'show'; openDropdowns.reasoningSelect = false; }}
+                  class="w-full text-left px-3 py-2 text-xs font-mono transition-all rounded-b-lg"
+                  style="background:{reasoningVisibility === 'show' ? '#00e5a0' : 'transparent'}; color:{reasoningVisibility === 'show' ? '#09090d' : '#c9c9d9'}"
+                >
+                  Reasoning: shown
+                </button>
+              </div>
+            {/if}
+          </div>
         </div>
         <button title="Clear chat" onclick={() => { messages = []; }} class="p-2 rounded-lg transition-all hover:bg-white/20 active:bg-white/10" style="color:#4a4a5e; background:#ffffff0a">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">

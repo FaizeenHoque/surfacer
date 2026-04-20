@@ -19,6 +19,7 @@ export type ChatMessageRow = {
   user_id: string;
   role: ChatRole;
   content: string;
+  credits_used?: number | null;
   created_at: string;
 };
 
@@ -121,7 +122,7 @@ export async function getOrCreateChatSession(
 export async function listChatMessages(supabase: SupabaseClient, chatId: string) {
   const { data, error } = await supabase
     .from('chat_messages')
-    .select('id, chat_id, user_id, role, content, created_at')
+    .select('id, chat_id, user_id, role, content, credits_used, created_at')
     .eq('chat_id', chatId)
     .order('created_at', { ascending: true })
     .order('id', { ascending: true });
@@ -138,7 +139,8 @@ export async function appendChatMessage(
   chatId: string,
   userId: string,
   role: ChatRole,
-  content: string
+  content: string,
+  creditsUsed?: number
 ) {
   const { data, error } = await supabase
     .from('chat_messages')
@@ -147,8 +149,9 @@ export async function appendChatMessage(
       user_id: userId,
       role,
       content,
+      credits_used: creditsUsed,
     })
-    .select('id, chat_id, user_id, role, content, created_at')
+    .select('id, chat_id, user_id, role, content, credits_used, created_at')
     .single();
 
   if (error || !data) {
